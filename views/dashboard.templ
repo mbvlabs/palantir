@@ -3,15 +3,23 @@ package views
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"palantir/models"
 	"palantir/router/routes"
 	"palantir/views/components"
 )
 
-templ DashboardShow(website models.Website, stats models.DashboardStats, period string, bucket string) {
+templ DashboardShow(website models.Website, stats models.DashboardStats, period string, startParam string, endParam string, bucket string) {
 	@base(SetTitle(website.Name + " Dashboard")) {
 		<main class="flex-1">
-			<div class="container mx-auto max-w-6xl px-4 py-8">
+			<div
+				class="container mx-auto max-w-6xl px-4 py-8"
+				data-signals={ dashboardSignalsJSON(stats, bucket) }
+			>
+				<div
+					class="hidden"
+					data-on-load={ "@get('" + dashboardLiveURL(website.ID.String(), period, startParam, endParam) + "')" }
+				></div>
 				<div class="flex items-center justify-between mb-6">
 					<div>
 						@components.Breadcrumb() {
@@ -30,6 +38,12 @@ templ DashboardShow(website models.Website, stats models.DashboardStats, period 
 						Settings
 					</a>
 				</div>
+				<div class="flex items-center justify-between mb-4 gap-3">
+					<div class="text-xs text-base-content/50">Live updates every 15s</div>
+					<div class="text-xs text-base-content/50">
+						Updated <span class="font-medium text-base-content/70" data-text="$dashboard.lastUpdated">just now</span>
+					</div>
+				</div>
 				<div class="flex flex-wrap gap-2 mb-6">
 					@periodLink(website.ID.String(), "Today", "today", period)
 					@periodLink(website.ID.String(), "Last 7 days", "7d", period)
@@ -42,22 +56,16 @@ templ DashboardShow(website models.Website, stats models.DashboardStats, period 
 						<input type="hidden" name="period" value="custom"/>
 						<div>
 							<label class="text-xs text-base-content/60 block mb-1">Start date</label>
-							<input type="date" name="start" class="input input-bordered input-sm"/>
+							<input type="date" name="start" value={ startParam } class="input input-bordered input-sm"/>
 						</div>
 						<div>
 							<label class="text-xs text-base-content/60 block mb-1">End date</label>
-							<input type="date" name="end" class="input input-bordered input-sm"/>
+							<input type="date" name="end" value={ endParam } class="input input-bordered input-sm"/>
 						</div>
 						<button type="submit" class="btn btn-primary btn-sm">Apply</button>
 					</form>
 				}
-				<div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
-					@statCard("Total Page Views", fmt.Sprintf("%d", stats.TotalPageviews))
-					@statCard("Unique Visitors", fmt.Sprintf("%d", stats.TotalUniqueVisitors))
-					@statCard("Top Page", topItem(stats.TopPages))
-				</div>
-				@chartCard("Pageviews Over Time", "pageviewsChart", timeBucketLabels(stats.PageviewsOverTime, bucket), timeBucketValues(stats.PageviewsOverTime), "oklch(var(--p))")
-				@chartCard("Unique Visitors Over Time", "visitorsChart", timeBucketLabels(stats.VisitorsOverTime, bucket), timeBucketValues(stats.VisitorsOverTime), "oklch(var(--s))")
+				@primaryAnalyticsPanel()
 				<div class="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
 					@breakdownCard("Top Pages", stats.TopPages)
 					@breakdownCard("Referrers", stats.TopReferrers)
@@ -68,11 +76,6 @@ templ DashboardShow(website models.Website, stats models.DashboardStats, period 
 					@breakdownCard("Devices", stats.Devices)
 					@breakdownCard("Events", stats.TopEvents)
 				</div>
-				if len(stats.EventsOverTime) > 0 {
-					<div class="mt-4">
-						@chartCard("Events Over Time", "eventsChart", timeBucketLabels(stats.EventsOverTime, bucket), timeBucketValues(stats.EventsOverTime), "oklch(var(--a))")
-					</div>
-				}
 			</div>
 		</main>
 		<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
@@ -87,7 +90,62 @@ func topItem(items []models.BreakdownItem) string {
 	return items[0].Name
 }
 
+func dashboardSignalsJSON(stats models.DashboardStats, bucket string) string {
+	payload := map[string]any{
+		"dashboard": map[string]any{
+			"totals": map[string]any{
+				"totalPageviews":      stats.TotalPageviews,
+				"totalUniqueVisitors": stats.TotalUniqueVisitors,
+				"topPage":             topItem(stats.TopPages),
+			},
+			"series": map[string]any{
+				"pageviews": map[string]any{
+					"labels": timeBucketLabelList(stats.PageviewsOverTime, bucket),
+					"values": timeBucketValueList(stats.PageviewsOverTime),
+				},
+				"visitors": map[string]any{
+					"labels": timeBucketLabelList(stats.VisitorsOverTime, bucket),
+					"values": timeBucketValueList(stats.VisitorsOverTime),
+				},
+				"events": map[string]any{
+					"labels": timeBucketLabelList(stats.EventsOverTime, bucket),
+					"values": timeBucketValueList(stats.EventsOverTime),
+				},
+			},
+			"lastUpdated": "just now",
+		},
+	}
+
+	data, _ := json.Marshal(payload)
+	return string(data)
+}
+
+func dashboardLiveURL(websiteID, period, start, end string) string {
+	vals := url.Values{}
+	if period != "" {
+		vals.Set("period", period)
+	}
+	if start != "" {
+		vals.Set("start", start)
+	}
+	if end != "" {
+		vals.Set("end", end)
+	}
+
+	base := fmt.Sprintf("/websites/%s/dashboard/live", websiteID)
+	if len(vals) == 0 {
+		return base
+	}
+
+	return base + "?" + vals.Encode()
+}
+
 func timeBucketLabels(buckets []models.TimeBucket, bucketType string) string {
+	data, _ := json.Marshal(timeBucketLabelList(buckets, bucketType))
+	return string(data)
+}
+
+func timeBucketLabelList(buckets []models.TimeBucket, bucketType string) []string {
 	labels := make([]string, len(buckets))
 	for i, b := range buckets {
 		if bucketType == "hour" {
@@ -96,73 +154,289 @@ func timeBucketLabels(buckets []models.TimeBucket, bucketType string) string {
 			labels[i] = b.Time.Format("Jan 02")
 		}
 	}
-	data, _ := json.Marshal(labels)
-	return string(data)
+	return labels
 }
 
 func timeBucketValues(buckets []models.TimeBucket) string {
+	data, _ := json.Marshal(timeBucketValueList(buckets))
+	return string(data)
+}
+
+func timeBucketValueList(buckets []models.TimeBucket) []int64 {
 	values := make([]int64, len(buckets))
 	for i, b := range buckets {
 		values[i] = b.Count
 	}
-	data, _ := json.Marshal(values)
-	return string(data)
+	return values
 }
 
-templ chartCard(title, canvasID, labelsJSON, valuesJSON, color string) {
+templ liveStatCard(title string, signalExpr string) {
 	@components.Card() {
-		@components.CardHeader() {
-			@components.CardTitle(title)
-		}
 		@components.CardContent() {
-			if labelsJSON == "[]" || labelsJSON == "null" {
-				<p class="text-sm text-base-content/60">No data yet</p>
-			} else {
-				<canvas
-					id={ canvasID }
-					class="w-full palantir-chart"
-					style="height: 250px;"
-					data-labels={ labelsJSON }
-					data-values={ valuesJSON }
-					data-color={ color }
-				></canvas>
-			}
+			<div class="pt-4">
+				<p class="text-sm font-medium text-base-content/60">{ title }</p>
+				<p class="text-2xl font-bold mt-1 truncate" data-text={ signalExpr }>0</p>
+			</div>
 		}
 	}
 }
 
+templ primaryAnalyticsPanel() {
+	<div class="rounded-2xl border border-base-300 bg-base-100 shadow-sm overflow-hidden">
+		<div class="grid grid-cols-1 md:grid-cols-3 divide-y md:divide-y-0 md:divide-x divide-base-300/80">
+			@panelMetric("Unique Visitors", "$dashboard.totals.totalUniqueVisitors", true)
+			@panelMetric("Total Visits", "$dashboard.totals.totalPageviews", false)
+			@panelMetric("Top Page", "$dashboard.totals.topPage", false)
+		</div>
+		<div class="p-3 md:p-5">
+			@chartCard("Traffic Over Time", "pageviews", "$dashboard.series.pageviews", "--color-primary", "primary", "320px")
+		</div>
+	</div>
+}
+
+templ panelMetric(label string, valueExpr string, emphasize bool) {
+	<div class="p-4 md:p-5">
+		if emphasize {
+			<p class="text-xs font-semibold uppercase tracking-wide mb-1 text-primary">{ label }</p>
+		} else {
+			<p class="text-xs font-semibold uppercase tracking-wide mb-1 text-base-content/50">{ label }</p>
+		}
+		<p class="text-2xl md:text-3xl font-semibold text-base-content" data-text={ valueExpr }>0</p>
+	</div>
+}
+
+templ chartCard(title string, chartID string, seriesExpr string, color string, variant string, height string) {
+	{{
+		unit := "count"
+		if chartID == "pageviews" {
+			unit = "views"
+		} else if chartID == "visitors" {
+			unit = "visitors"
+		} else if chartID == "events" {
+			unit = "events"
+		}
+	}}
+	<div class="rounded-xl border border-base-300 bg-base-100 shadow-sm p-4">
+		<p class="text-sm font-semibold text-base-content/80 mb-3">{ title }</p>
+		<p class="text-sm text-base-content/60" data-show={ seriesExpr + ".values.length === 0" }>No data yet</p>
+		<div style={ "position: relative; height: " + height + ";" } data-show={ seriesExpr + ".values.length > 0" }>
+			<canvas
+				id={ chartID + "Chart" }
+				class="w-full palantir-chart rounded-box"
+				data-chart-id={ chartID }
+				data-chart-color={ color }
+				data-chart-unit={ unit }
+				data-chart-variant={ variant }
+				data-attr:data-labels={ "JSON.stringify(" + seriesExpr + ".labels)" }
+				data-attr:data-values={ "JSON.stringify(" + seriesExpr + ".values)" }
+			></canvas>
+		</div>
+	</div>
+}
+
 templ chartInitScript() {
 	<script>
-		document.addEventListener('DOMContentLoaded', function() {
-			document.querySelectorAll('.palantir-chart').forEach(function(canvas) {
-				var labels = JSON.parse(canvas.getAttribute('data-labels'));
-				var values = JSON.parse(canvas.getAttribute('data-values'));
-				var color = canvas.getAttribute('data-color');
-				new Chart(canvas, {
-					type: 'line',
-					data: {
-						labels: labels,
-						datasets: [{
-							data: values,
-							borderColor: color,
-							backgroundColor: color.replace(')', ' / 0.1)'),
-							fill: true,
-							tension: 0.3,
-							pointRadius: 2,
-						}]
-					},
-					options: {
-						responsive: true,
-						maintainAspectRatio: false,
-						plugins: { legend: { display: false } },
-						scales: {
-							y: { beginAtZero: true, ticks: { precision: 0 } },
-							x: { ticks: { maxTicksLimit: 12 } }
-						}
+			(function() {
+				if (!window.palantirDashboardCharts) {
+					window.palantirDashboardCharts = new Map();
+				}
+				if (!window.palantirDashboardChartLoopStarted) {
+					window.palantirDashboardChartLoopStarted = false;
+				}
+
+			function parseArrayAttribute(value) {
+				if (!value) {
+					return [];
+				}
+				try {
+					var parsed = JSON.parse(value);
+					return Array.isArray(parsed) ? parsed : [];
+				} catch (error) {
+					return [];
+				}
+			}
+
+			function normalizeSeries(labels, values, maxPoints) {
+				var dedupedLabels = [];
+				var dedupedValues = [];
+				var seen = Object.create(null);
+				for (var i = 0; i < labels.length; i++) {
+					var label = String(labels[i]);
+					var value = Number(values[i] || 0);
+					if (seen[label] !== undefined) {
+						dedupedValues[seen[label]] = value;
+						continue;
 					}
-				});
-			});
-		});
+					seen[label] = dedupedLabels.length;
+					dedupedLabels.push(label);
+					dedupedValues.push(Number.isFinite(value) ? value : 0);
+				}
+
+				var limit = Math.max(1, Number(maxPoints || dedupedLabels.length));
+				if (dedupedLabels.length > limit) {
+					dedupedLabels = dedupedLabels.slice(dedupedLabels.length - limit);
+					dedupedValues = dedupedValues.slice(dedupedValues.length - limit);
+				}
+
+				return { labels: dedupedLabels, values: dedupedValues };
+			}
+
+			function buildGradient(ctx, color) {
+				var gradient = ctx.createLinearGradient(0, 0, 0, 250);
+				try {
+					gradient.addColorStop(0, 'color-mix(in oklab, ' + color + ' 18%, transparent)');
+					gradient.addColorStop(1, 'color-mix(in oklab, ' + color + ' 0%, transparent)');
+					return gradient;
+				} catch (error) {
+					return color;
+				}
+			}
+
+			function themeColor(cssVar, alpha) {
+				var raw = getComputedStyle(document.documentElement).getPropertyValue(cssVar).trim();
+				if (!raw) return alpha < 1 ? 'rgba(160,160,160,' + alpha + ')' : 'rgb(160,160,160)';
+				if (alpha >= 1) return raw;
+				// raw is an oklch(...) value — wrap with color-mix for alpha
+				return 'color-mix(in oklab, ' + raw + ' ' + Math.round(alpha * 100) + '%, transparent)';
+			}
+
+			function ensureChart(canvas) {
+				var key = canvas.getAttribute('data-chart-id') || canvas.id;
+				var labels = parseArrayAttribute(canvas.getAttribute('data-labels'));
+				var values = parseArrayAttribute(canvas.getAttribute('data-values'));
+				var rawColor = canvas.getAttribute('data-chart-color') || 'rgb(96, 165, 250)';
+				var color = rawColor.indexOf('--') === 0 ? themeColor(rawColor, 1) : rawColor;
+				var unit = canvas.getAttribute('data-chart-unit') || 'count';
+				var variant = canvas.getAttribute('data-chart-variant') || 'secondary';
+				var isPrimary = variant === 'primary';
+				var existing = window.palantirDashboardCharts.get(key);
+				var pointLimit = existing && existing.maxPoints ? existing.maxPoints : labels.length;
+				var normalized = normalizeSeries(labels, values, pointLimit);
+				labels = normalized.labels;
+				values = normalized.values;
+
+				var tickColor = themeColor('--color-base-content', 0.7);
+				var gridColor = themeColor('--color-base-content', 0.08);
+				var tooltipBg = themeColor('--color-base-100', 0.98);
+				var tooltipText = themeColor('--color-base-content', 0.85);
+				var tooltipBorder = themeColor('--color-base-content', 0.18);
+
+				if (!existing || existing.canvas !== canvas) {
+					if (existing && existing.chart) {
+						existing.chart.destroy();
+					}
+
+					var context = canvas.getContext('2d');
+					var chart = new Chart(context, {
+						type: 'line',
+						data: {
+							labels: labels,
+							datasets: [{
+								data: values,
+								borderColor: color,
+								backgroundColor: buildGradient(context, color),
+								fill: isPrimary,
+								borderWidth: isPrimary ? 2 : 1.8,
+								tension: 0,
+								cubicInterpolationMode: 'monotone',
+								pointRadius: 0,
+								pointHoverRadius: 0,
+								hitRadius: 12,
+								spanGaps: true,
+							}]
+						},
+						options: {
+							responsive: true,
+							maintainAspectRatio: false,
+							animation: false,
+							normalized: true,
+							interaction: { mode: 'index', intersect: false },
+							plugins: {
+								legend: { display: false },
+								tooltip: {
+									displayColors: false,
+									backgroundColor: tooltipBg,
+									titleColor: tooltipText,
+									bodyColor: tooltipText,
+									padding: 8,
+									borderColor: tooltipBorder,
+									borderWidth: 1,
+									callbacks: {
+										label: function(ctx) {
+											var value = ctx.parsed.y;
+											var formatted = (typeof value === 'number' ? value.toLocaleString() : value);
+											return unit === 'views' ? formatted + ' views' : unit === 'visitors' ? formatted + ' visitors' : unit === 'events' ? formatted + ' events' : formatted;
+										}
+									}
+								}
+							},
+							scales: {
+								y: {
+									beginAtZero: true,
+									ticks: {
+										precision: 0,
+										maxTicksLimit: 6,
+										padding: 6,
+										color: tickColor
+									},
+									grid: {
+										color: gridColor,
+										drawBorder: false
+									}
+								},
+								x: {
+									ticks: {
+										autoSkip: true,
+										maxTicksLimit: 8,
+										maxRotation: 0,
+										padding: 4,
+										color: tickColor
+									},
+									grid: {
+										display: false,
+										drawBorder: false
+									}
+								}
+							}
+						}
+					});
+
+					window.palantirDashboardCharts.set(key, { chart: chart, canvas: canvas, maxPoints: labels.length });
+					return;
+				}
+
+				existing.chart.data.labels = labels;
+				existing.chart.data.datasets[0].data = values;
+				existing.chart.update('none');
+			}
+
+				function syncCharts() {
+					document.querySelectorAll('.palantir-chart').forEach(ensureChart);
+				}
+
+				window.palantirDashboardSyncCharts = syncCharts;
+
+				if (document.readyState === 'loading') {
+					document.addEventListener('DOMContentLoaded', syncCharts);
+				} else {
+					syncCharts();
+				}
+
+				if (!window.palantirDashboardChartLoopStarted) {
+					window.palantirDashboardChartLoopStarted = true;
+					var observer = new MutationObserver(function(mutations) {
+						for (var i = 0; i < mutations.length; i++) {
+							var mutation = mutations[i];
+							if (mutation.type === 'attributes' &&
+								(mutation.attributeName === 'data-labels' || mutation.attributeName === 'data-values')) {
+								syncCharts();
+								break;
+							}
+						}
+					});
+					observer.observe(document.body, { attributes: true, subtree: true });
+				}
+			})();
 	</script>
 }
 

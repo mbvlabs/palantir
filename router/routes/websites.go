@@ -53,3 +53,9 @@ var WebsiteDashboard = routing.NewRouteWithUUIDID(
 	"websites.dashboard",
 	WebsitesPrefix,
 )
+
+var WebsiteDashboardLive = routing.NewRouteWithUUIDID(
+	"/:id/dashboard/live",
+	"websites.dashboard.live",
+	WebsitesPrefix,
+)

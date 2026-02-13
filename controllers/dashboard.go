@@ -1,8 +1,10 @@
 package controllers
 
 import (
+	"net/http"
 	"time"
 
+	"palantir/internal/hypermedia"
 	"palantir/internal/storage"
 	"palantir/models"
 	"palantir/router/cookies"
@@ -50,7 +52,41 @@ func (d Dashboard) Show(etx *echo.Context) error {
 		return render(etx, views.InternalError())
 	}
 
-	return render(etx, views.DashboardShow(website, stats, period, bucket))
+	return render(etx, views.DashboardShow(website, stats, period, startParam, endParam, bucket))
+}
+
+func (d Dashboard) Live(etx *echo.Context) error {
+	websiteID, err := uuid.Parse(etx.Param("id"))
+	if err != nil {
+		return etx.NoContent(http.StatusBadRequest)
+	}
+
+	app := cookies.GetApp(etx)
+	ctx := etx.Request().Context()
+
+	website, err := models.FindWebsite(ctx, d.db.Conn(), websiteID)
+	if err != nil {
+		return etx.NoContent(http.StatusNotFound)
+	}
+
+	if website.UserID != app.UserID {
+		return etx.NoContent(http.StatusNotFound)
+	}
+
+	period := etx.QueryParam("period")
+	startParam := etx.QueryParam("start")
+	endParam := etx.QueryParam("end")
+	startDate, endDate := parseDateRange(period, startParam, endParam)
+	bucket := chooseBucket(startDate, endDate)
+
+	stats, err := models.GetDashboardStats(ctx, d.db.Conn(), websiteID, startDate, endDate, bucket)
+	if err != nil {
+		return etx.NoContent(http.StatusInternalServerError)
+	}
+
+	return hypermedia.MarshalAndPatchSignals(etx, map[string]any{
+		"dashboard": dashboardSignalsPayload(stats, bucket),
+	})
 }
 
 func parseDateRange(period, startParam, endParam string) (time.Time, time.Time) {
@@ -86,4 +122,46 @@ func chooseBucket(start, end time.Time) string {
 		return "hour"
 	}
 	return "day"
+}
+
+func dashboardSignalsPayload(stats models.DashboardStats, bucket string) map[string]any {
+	return map[string]any{
+		"totals": map[string]any{
+			"totalPageviews":      stats.TotalPageviews,
+			"totalUniqueVisitors": stats.TotalUniqueVisitors,
+			"topPage":             topBreakdownName(stats.TopPages),
+		},
+		"series": map[string]any{
+			"pageviews": toSeriesPayload(stats.PageviewsOverTime, bucket),
+			"visitors":  toSeriesPayload(stats.VisitorsOverTime, bucket),
+			"events":    toSeriesPayload(stats.EventsOverTime, bucket),
+		},
+		"lastUpdated": time.Now().UTC().Format("15:04:05 UTC"),
+	}
+}
+
+func topBreakdownName(items []models.BreakdownItem) string {
+	if len(items) == 0 {
+		return "-"
+	}
+	return items[0].Name
+}
+
+func toSeriesPayload(buckets []models.TimeBucket, bucketType string) map[string]any {
+	labels := make([]string, len(buckets))
+	values := make([]int64, len(buckets))
+
+	for i, b := range buckets {
+		if bucketType == "hour" {
+			labels[i] = b.Time.Format("Jan 02 15:00")
+		} else {
+			labels[i] = b.Time.Format("Jan 02")
+		}
+		values[i] = b.Count
+	}
+
+	return map[string]any{
+		"labels": labels,
+		"values": values,
+	}
 }

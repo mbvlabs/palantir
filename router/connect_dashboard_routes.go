@@ -27,5 +27,18 @@ func (r Router) RegisterDashboardRoutes(dashboard controllers.Dashboard) error {
 		errs = append(errs, err)
 	}
 
+	_, err = r.e.AddRoute(echo.Route{
+		Method:  http.MethodGet,
+		Path:    routes.WebsiteDashboardLive.Path(),
+		Name:    routes.WebsiteDashboardLive.Name(),
+		Handler: dashboard.Live,
+		Middlewares: []echo.MiddlewareFunc{
+			middleware.AuthOnly,
+		},
+	})
+	if err != nil {
+		errs = append(errs, err)
+	}
+
 	return errors.Join(errs...)
 }
