@@ -1,0 +1,181 @@
+package services
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"time"
+
+	"palantir/config"
+	"palantir/email"
+	"palantir/internal/storage"
+	"palantir/models"
+	"palantir/queue"
+	"palantir/router/routes"
+	"palantir/queue/jobs"
+)
+
+const userResetPassword = "user_password_reset"
+
+var (
+	ErrInvalidResetCode = errors.New("invalid reset code")
+	ErrExpiredResetCode = errors.New("reset code has expired")
+)
+
+type RequestResetPasswordData struct {
+	Email string
+}
+
+func RequestResetPassword(
+	ctx context.Context,
+	db storage.Pool,
+	insertOnly queue.InsertOnly,
+	salt string,
+	data RequestResetPasswordData,
+) error {
+	tx, err := db.BeginTx(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	user, err := models.FindUserByEmail(ctx, tx, data.Email)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		return err
+	}
+
+	meta, err := json.Marshal(map[string]string{
+		"email": user.Email,
+	})
+	if err != nil {
+		return err
+	}
+
+	token, err := models.CreateToken(
+		ctx,
+		tx,
+		salt,
+		userResetPassword,
+		time.Now().Add(1*time.Hour), // 1 hour expiry
+		meta,
+	)
+	if err != nil {
+		return err
+	}
+
+	resetURL := fmt.Sprintf("%s%s", config.BaseURL, routes.PasswordEdit.URL(token))
+
+	rpEmail := email.ResetPassword{ResetURL: resetURL}
+
+	html, err := rpEmail.ToHTML()
+	if err != nil {
+		return err
+	}
+
+	text, err := rpEmail.ToText()
+	if err != nil {
+		return err
+	}
+
+	_, err = insertOnly.InsertTx(ctx, tx, jobs.SendTransactionalEmailArgs{
+		Data: email.TransactionalData{
+			To:       user.Email,
+			From:     "noreply@andurel.com",
+			Subject:  "Reset Your Password",
+			HTMLBody: html,
+			TextBody: text,
+		},
+	}, nil)
+	if err != nil {
+		return err
+	}
+
+	return tx.Commit(ctx)
+}
+
+type ResetPasswordData struct {
+	Token           string
+	Password        string
+	ConfirmPassword string
+}
+
+func ResetPassword(
+	ctx context.Context,
+	db storage.Pool,
+	salt string,
+	data ResetPasswordData,
+) error {
+	tx, err := db.BeginTx(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	if data.Password != data.ConfirmPassword {
+		return errors.New("passwords do not match")
+	}
+
+	if len(data.Password) < 8 {
+		return errors.New("password must be at least 8 characters")
+	}
+
+	token, err := models.FindTokenByScopeAndHash(
+		ctx,
+		tx,
+		salt,
+		userResetPassword,
+		data.Token,
+	)
+	if err != nil {
+		return ErrInvalidResetCode
+	}
+
+	if !token.IsValid(data.Token, salt) {
+		return ErrExpiredResetCode
+	}
+
+	var meta map[string]string
+	if err := json.Unmarshal(token.MetaData, &meta); err != nil {
+		return err
+	}
+
+	email, ok := meta["email"]
+	if !ok {
+		return errors.New("token metadata missing email")
+	}
+
+	user, err := models.FindUserByEmail(ctx, tx, email)
+	if err != nil {
+		return err
+	}
+
+	hashedPassword, err := models.HashPassword(data.Password, salt)
+	if err != nil {
+		return err
+	}
+
+	_, err = models.UpdateUser(ctx, tx, models.UpdateUserData{
+		ID:    user.ID,
+		Email: user.Email,
+		EmailValidatedAt: sql.NullTime{
+			Time:  user.EmailValidatedAt,
+			Valid: !user.EmailValidatedAt.IsZero(),
+		},
+		Password: []byte(hashedPassword),
+		IsAdmin:  user.IsAdmin,
+	})
+	if err != nil {
+		return err
+	}
+
+	if err := models.DestroyToken(ctx, tx, token.ID); err != nil {
+		return err
+	}
+
+	return tx.Commit(ctx)
+}

@@ -1,0 +1,345 @@
+// Package middleware provides HTTP middleware for the Echo web framework,
+package middleware
+
+import (
+	"errors"
+	"log/slog"
+	"net/http"
+	"net/url"
+	"strings"
+	"time"
+
+	"palantir/config"
+	"palantir/internal/renderer"
+	"palantir/internal/server"
+	"palantir/internal/storage"
+	"palantir/router/cookies"
+	"palantir/router/routes"
+	"palantir/telemetry"
+
+	"github.com/labstack/echo/v5"
+	echomw "github.com/labstack/echo/v5/middleware"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/semconv/v1.26.0"
+	"go.opentelemetry.io/otel/trace"
+)
+
+type Middleware struct {
+	db storage.Pool
+}
+
+func New(db storage.Pool) Middleware {
+	return Middleware{db: db}
+}
+
+func (m Middleware) RegisterAppContext(
+	next echo.HandlerFunc,
+) echo.HandlerFunc {
+	return func(c *echo.Context) error {
+		if strings.Contains(c.Request().URL.Path, routes.AssetsPrefix) ||
+			strings.Contains(c.Request().URL.Path, routes.APIPrefix) {
+			return next(c)
+		}
+
+		c.Set(string(cookies.AppKey), cookies.GetApp(c))
+
+		return next(c)
+	}
+}
+
+func (m Middleware) RegisterFlashMessagesContext(
+	next echo.HandlerFunc,
+) echo.HandlerFunc {
+	return func(c *echo.Context) error {
+		if strings.Contains(c.Request().URL.Path, routes.AssetsPrefix) ||
+			strings.Contains(c.Request().URL.Path, routes.APIPrefix) {
+			return next(c)
+		}
+
+		flashes, err := cookies.GetFlashes(c)
+		if err != nil {
+			slog.Error("Error getting flash messages from session", "error", err)
+			return next(c)
+		}
+
+		c.Set(string(cookies.FlashKey), flashes)
+
+		return next(c)
+	}
+}
+
+func (m Middleware) TrackReturnTo(
+	next echo.HandlerFunc,
+) echo.HandlerFunc {
+	return func(c *echo.Context) error {
+		if strings.Contains(c.Request().URL.Path, routes.AssetsPrefix) ||
+			strings.Contains(c.Request().URL.Path, routes.APIPrefix) {
+			return next(c)
+		}
+
+		c.Set(string(renderer.BackURLKey), cookies.GetReturnTo(c))
+
+		method := c.Request().Method
+		if method != http.MethodGet && method != http.MethodHead {
+			return next(c)
+		}
+
+		referer := strings.TrimSpace(c.Request().Referer())
+		if referer == "" {
+			if err := cookies.SetReturnTo(c, ""); err != nil {
+				slog.Warn("Error clearing return_to", "error", err)
+			}
+			c.Set(string(renderer.BackURLKey), "")
+			return next(c)
+		}
+
+		refererURL, err := url.Parse(referer)
+		if err != nil {
+			if clearErr := cookies.SetReturnTo(c, ""); clearErr != nil {
+				slog.Warn("Error clearing return_to", "error", clearErr)
+			}
+			c.Set(string(renderer.BackURLKey), "")
+			return next(c)
+		}
+
+		if refererURL.Host != "" && !strings.EqualFold(refererURL.Host, c.Request().Host) {
+			if clearErr := cookies.SetReturnTo(c, ""); clearErr != nil {
+				slog.Warn("Error clearing return_to", "error", clearErr)
+			}
+			c.Set(string(renderer.BackURLKey), "")
+			return next(c)
+		}
+
+		returnTo := refererURL.EscapedPath()
+		if returnTo == "" {
+			returnTo = "/"
+		}
+		if refererURL.RawQuery != "" {
+			returnTo += "?" + refererURL.RawQuery
+		}
+
+		current := c.Request().URL.Path
+		if c.Request().URL.RawQuery != "" {
+			current += "?" + c.Request().URL.RawQuery
+		}
+
+		if returnTo == current ||
+			!strings.HasPrefix(returnTo, "/") ||
+			strings.HasPrefix(returnTo, "//") {
+			if clearErr := cookies.SetReturnTo(c, ""); clearErr != nil {
+				slog.Warn("Error clearing return_to", "error", clearErr)
+			}
+			c.Set(string(renderer.BackURLKey), "")
+			return next(c)
+		}
+
+		if err := cookies.SetReturnTo(c, returnTo); err != nil {
+			slog.Warn("Error setting return_to", "error", err)
+		}
+		c.Set(string(renderer.BackURLKey), returnTo)
+
+		return next(c)
+	}
+}
+
+
+func (m Middleware) ValidateSession(
+	next echo.HandlerFunc,
+) echo.HandlerFunc {
+	return func(c *echo.Context) error {
+		// Skip session validation for static assets and API routes
+		if strings.Contains(c.Request().URL.Path, routes.AssetsPrefix) ||
+			strings.Contains(c.Request().URL.Path, routes.APIPrefix) {
+			return next(c)
+		}
+
+		return next(c)
+	}
+}
+
+func (m Middleware) Logger(tel *telemetry.Telemetry) echo.MiddlewareFunc {
+	var httpRequestsTotal metric.Int64Counter
+	var httpDuration metric.Float64Histogram
+	var httpInFlight metric.Int64UpDownCounter
+
+	if tel.HasMetrics() {
+		var err error
+		httpRequestsTotal, err = telemetry.HTTPRequestsTotal()
+		if err != nil {
+			slog.Warn("failed to create http_requests_total metric", "error", err)
+		}
+		httpDuration, err = telemetry.HTTPRequestDuration()
+		if err != nil {
+			slog.Warn("failed to create http_request_duration metric", "error", err)
+		}
+		httpInFlight, err = telemetry.HTTPRequestsInFlight()
+		if err != nil {
+			slog.Warn("failed to create http_requests_in_flight metric", "error", err)
+		}
+
+		meter := telemetry.GetMeter(config.ServiceName)
+		if err := telemetry.SetupRuntimeMetricsInCallback(meter); err != nil {
+			slog.Warn("failed to setup runtime metrics", "error", err)
+		}
+	}
+
+	return func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c *echo.Context) error {
+			if strings.Contains(c.Request().URL.Path, routes.AssetsPrefix) ||
+				strings.Contains(c.Request().URL.Path, routes.APIPrefix) {
+				return next(c)
+			}
+
+			ctx := c.Request().Context()
+			start := time.Now()
+
+			if tel.HasMetrics() && httpInFlight != nil {
+				httpInFlight.Add(ctx, 1)
+				defer httpInFlight.Add(ctx, -1)
+			}
+
+			err := next(c)
+			duration := time.Since(start)
+			route := c.Path()
+
+			statusCode := 0
+			if resp, unwrapErr := echo.UnwrapResponse(c.Response()); unwrapErr == nil {
+				statusCode = resp.Status
+			}
+
+			if tel.HasMetrics() && httpRequestsTotal != nil && httpDuration != nil {
+				attrs := []attribute.KeyValue{
+					attribute.String("method", c.Request().Method),
+					attribute.String("route", route),
+					attribute.Int("status_code", statusCode),
+				}
+				httpRequestsTotal.Add(ctx, 1, metric.WithAttributes(attrs...))
+				httpDuration.Record(ctx, duration.Seconds(), metric.WithAttributes(attrs...))
+			}
+
+			slog.InfoContext(ctx, "HTTP request completed",
+				"method", c.Request().Method,
+				"path", c.Request().URL.Path,
+				"status", statusCode,
+				"remote_addr", c.RealIP(),
+				"user_agent", c.Request().UserAgent(),
+				"duration", duration.String(),
+			)
+
+			return err
+		}
+	}
+}
+
+func (m Middleware) TraceRouteAttributes(tel *telemetry.Telemetry) echo.MiddlewareFunc {
+	return func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c *echo.Context) error {
+			if strings.Contains(c.Request().URL.Path, routes.AssetsPrefix) ||
+				strings.Contains(c.Request().URL.Path, routes.APIPrefix) {
+				return next(c)
+			}
+
+			err := next(c)
+			if !tel.HasTracing() {
+				return err
+			}
+
+			routeInfo := c.RouteInfo()
+			if routeInfo.Path == "" {
+				return err
+			}
+
+			span := trace.SpanFromContext(c.Request().Context())
+			if !span.SpanContext().IsValid() {
+				return err
+			}
+
+			span.SetAttributes(
+				semconv.HTTPRoute(routeInfo.Path),
+			)
+
+			return err
+		}
+	}
+}
+
+func (m Middleware) CSRFMiddleware(cfg config.Config, csrfName string) (echo.MiddlewareFunc, error) {
+	strategy := strings.TrimSpace(cfg.App.CSRFStrategy)
+
+	var headerOnly bool
+	var tokenLookup string
+	switch strategy {
+	case "header_only":
+		headerOnly = true
+		tokenLookup = "cookie:" + csrfName
+	case "header_or_legacy_token":
+		headerOnly = false
+		tokenLookup = "header:X-CSRF-Token,form:_csrf"
+	default:
+		return nil, errors.New("invalid CSRF strategy")
+	}
+
+	trustedOrigins := []string{config.BaseURL}
+	if len(cfg.App.CSRFTrustedOrigins) > 0 {
+		trustedOrigins = append(trustedOrigins, cfg.App.CSRFTrustedOrigins...)
+	}
+
+	csrfConfig := echomw.CSRFConfig{
+		Skipper: func(c *echo.Context) bool {
+			return strings.Contains(c.Request().URL.Path, routes.APIPrefix) ||
+				strings.Contains(c.Request().URL.Path, routes.AssetsPrefix)
+		},
+		TokenLookup:    tokenLookup,
+		CookiePath:     "/",
+		CookieDomain: func() string {
+			if config.Env == server.ProdEnvironment {
+				return config.Domain
+			}
+
+			return ""
+		}(),
+		CookieSecure:   config.Env == server.ProdEnvironment,
+		CookieHTTPOnly: true,
+		CookieSameSite: http.SameSiteStrictMode,
+		TrustedOrigins: trustedOrigins,
+	}
+
+	echoCSRF := echomw.CSRFWithConfig(csrfConfig)
+
+	return func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c *echo.Context) error {
+			path := c.Request().URL.Path
+			if strings.Contains(path, routes.APIPrefix) ||
+				strings.Contains(path, routes.AssetsPrefix) {
+				return next(c)
+			}
+
+			// Add Vary header for proper caching behavior
+			c.Response().Header().Add("Vary", "Sec-Fetch-Site")
+
+			method := c.Request().Method
+			isUnsafe := method != http.MethodGet && method != http.MethodHead &&
+				method != http.MethodOptions && method != http.MethodTrace
+
+			if isUnsafe {
+				secFetchSite := strings.ToLower(strings.TrimSpace(c.Request().Header.Get("Sec-Fetch-Site")))
+
+				// In header_only mode, reject requests missing Sec-Fetch-Site
+				if headerOnly && (secFetchSite == "" || secFetchSite == "none") {
+					return echo.NewHTTPError(http.StatusForbidden, "CSRF verification failed: missing Sec-Fetch-Site header")
+				}
+
+				// In legacy mode, log when falling back to form token
+				if !headerOnly && secFetchSite != "same-origin" && secFetchSite != "same-site" && secFetchSite != "cross-site" {
+					if c.Request().Header.Get("X-CSRF-Token") == "" && c.FormValue("_csrf") != "" {
+						slog.Warn("CSRF check fell back to legacy token")
+					}
+				}
+			}
+
+			// Delegate to Echo's CSRF middleware
+			return echoCSRF(next)(c)
+		}
+	}, nil
+}

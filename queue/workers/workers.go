@@ -1,0 +1,22 @@
+// Package workers provides a centralized place to register all background workers for the application.
+package workers
+
+import (
+	"github.com/riverqueue/river"
+
+	"palantir/email"
+)
+
+func Register(transactionalSender email.TransactionalSender, marketingSender email.MarketingSender) (*river.Workers, error) {
+	wrks := river.NewWorkers()
+
+	if err := river.AddWorkerSafely(wrks, NewSendTransactionalEmailWorker(transactionalSender)); err != nil {
+		return nil, err
+	}
+
+	if err := river.AddWorkerSafely(wrks, NewSendMarketingEmailWorker(marketingSender)); err != nil {
+		return nil, err
+	}
+
+	return wrks, nil
+}

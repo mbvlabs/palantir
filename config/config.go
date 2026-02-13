@@ -1,0 +1,76 @@
+// Package config provides application-wide configuration settings.
+package config
+
+import (
+	"fmt"
+	"os"
+	"strings"
+
+	"palantir/internal/server"
+
+	"github.com/gosimple/slug"
+)
+
+// Global application settings that can be used throughout the codebase with defaults.
+var (
+	Env = func() string {
+		if os.Getenv("ENVIRONMENT") != "" {
+			return os.Getenv("ENVIRONMENT")
+		}
+
+		return server.DevEnvironment
+	}()
+	ProjectName = func() string {
+		if os.Getenv("PROJECT_NAME") != "" {
+			return os.Getenv("PROJECT_NAME")
+		}
+
+		return "andurel"
+	}()
+	ServiceName = func() string {
+		if os.Getenv("TELEMETRY_SERVICE_NAME") != "" {
+			return os.Getenv("TELEMETRY_SERVICE_NAME")
+		}
+
+		return slug.Make(ProjectName)
+	}()
+	Domain = func() string {
+		if os.Getenv("DOMAIN") != "" {
+			return os.Getenv("DOMAIN")
+		}
+
+		return "localhost:8080"
+	}()
+	BaseURL = func() string {
+		var protocol string
+
+		if os.Getenv("PROTOCOL") != "" {
+			protocol = os.Getenv("PROTOCOL")
+		} else {
+			protocol = "http"
+		}
+
+		return fmt.Sprintf("%s://%s", protocol, Domain)
+	}()
+	AppCookieSessionName = func() string {
+		return "app_sess_"+slug.Make(strings.ToLower(ProjectName)) + "-" + Env
+	}()
+)
+
+type Config struct {
+	App       app
+	DB        database
+	Telemetry telemetry
+	Email email
+	Auth auth
+}
+
+func NewConfig() Config {
+	return Config{
+		App:       newAppConfig(),
+		DB:        newDatabaseConfig(),
+		Telemetry: newTelemetryConfig(),
+		Email: newEmailConfig(),
+		Auth: newAuthConfig(),
+	}
+}

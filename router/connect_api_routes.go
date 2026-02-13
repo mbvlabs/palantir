@@ -1,0 +1,27 @@
+package router
+
+import (
+	"errors"
+	"net/http"
+
+	"palantir/controllers"
+	"palantir/router/routes"
+
+	"github.com/labstack/echo/v5"
+)
+
+func (r Router) RegisterAPIRoutes(api controllers.API) error {
+	errs := []error{}
+
+	_, err := r.e.AddRoute(echo.Route{
+		Method:  http.MethodGet,
+		Path:    routes.Health.Path(),
+		Name:    routes.Health.Name(),
+		Handler: api.Health,
+	})
+	if err != nil {
+		errs = append(errs, err)
+	}
+
+	return errors.Join(errs...)
+}

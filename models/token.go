@@ -1,0 +1,267 @@
+package models
+
+import (
+	"context"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base32"
+	"encoding/hex"
+	"errors"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
+
+	"palantir/models/internal/db"
+	"palantir/internal/storage"
+)
+
+type Token struct {
+	ID        uuid.UUID
+	CreatedAt time.Time
+	UpdatedAt time.Time
+	Scope     string
+	ExpiresAt time.Time
+	Hash      string
+	MetaData  []byte
+}
+
+func (t Token) IsValid(token, secret string) bool {
+	expected := HashForStorage(token, secret)
+
+	isEqual := hmac.Equal([]byte(expected), []byte(t.Hash))
+	isNotExpired := time.Now().Before(t.ExpiresAt)
+
+	return isEqual && isNotExpired
+}
+
+const codeAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+
+func GenerateCode(n int) (string, error) {
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	for i := range b {
+		b[i] = codeAlphabet[int(b[i])%len(codeAlphabet)]
+	}
+
+	return string(b), nil
+}
+
+func GenerateSecureToken() (string, error) {
+	b := make([]byte, 15) // 120 bits
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(b), nil
+}
+
+func HashForStorage(plain, secret string) string {
+	m := hmac.New(sha256.New, []byte(secret))
+	m.Write([]byte(plain))
+
+	return hex.EncodeToString(m.Sum(nil))
+}
+
+func FindToken(
+	ctx context.Context,
+	exec storage.Executor,
+	id uuid.UUID,
+) (Token, error) {
+	row, err := queries.QueryTokenByID(ctx, exec, id)
+	if err != nil {
+		return Token{}, err
+	}
+
+	return rowToToken(row)
+}
+
+func CreateCodeToken(
+	ctx context.Context,
+	exec storage.Executor,
+	pepper string,
+	scope string,
+	expiresAt time.Time,
+	metaData []byte,
+) (string, error) {
+	tkn, err := GenerateCode(6)
+	if err != nil {
+		return "", err
+	}
+
+	if _, err := createToken(ctx, exec, createTokenData{
+		Scope:     scope,
+		ExpiresAt: expiresAt,
+		MetaData:  metaData,
+		Hash:      HashForStorage(tkn, pepper),
+	}); err != nil {
+		return "", err
+	}
+
+	return tkn, nil
+}
+
+func CreateToken(
+	ctx context.Context,
+	exec storage.Executor,
+	pepper string,
+	scope string,
+	expiresAt time.Time,
+	metaData []byte,
+) (string, error) {
+	tkn, err := GenerateSecureToken()
+	if err != nil {
+		return "", err
+	}
+
+	if _, err := createToken(ctx, exec, createTokenData{
+		Scope:     scope,
+		ExpiresAt: expiresAt,
+		MetaData:  metaData,
+		Hash:      HashForStorage(tkn, pepper),
+	}); err != nil {
+		return "", err
+	}
+
+	return tkn, nil
+}
+
+type createTokenData struct {
+	Scope     string    `validate:"required"`
+	ExpiresAt time.Time `validate:"required"`
+	Hash      string    `validate:"required"`
+	MetaData  []byte    `validate:"required"`
+}
+
+func createToken(
+	ctx context.Context,
+	exec storage.Executor,
+	data createTokenData,
+) (Token, error) {
+	if err := Validate.Struct(data); err != nil {
+		return Token{}, errors.Join(ErrDomainValidation, err)
+	}
+
+	params := db.InsertTokenParams{
+		ID:    uuid.New(),
+		Scope: data.Scope,
+		ExpiresAt: pgtype.Timestamptz{
+			Time:  data.ExpiresAt,
+			Valid: true,
+		},
+		Hash:     data.Hash,
+		MetaData: data.MetaData,
+	}
+	row, err := queries.InsertToken(ctx, exec, params)
+	if err != nil {
+		return Token{}, err
+	}
+
+	return rowToToken(row)
+}
+
+func DestroyToken(
+	ctx context.Context,
+	exec storage.Executor,
+	id uuid.UUID,
+) error {
+	return queries.DeleteToken(ctx, exec, id)
+}
+
+
+type PaginatedTokens struct {
+	Tokens     []Token
+	TotalCount int64
+	Page       int64
+	PageSize   int64
+	TotalPages int64
+}
+
+func PaginateTokens(
+	ctx context.Context,
+	exec storage.Executor,
+	page int64,
+	pageSize int64,
+) (PaginatedTokens, error) {
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 {
+		pageSize = 10
+	}
+	if pageSize > 100 {
+		pageSize = 100
+	}
+
+	offset := (page - 1) * pageSize
+
+	totalCount, err := queries.CountTokens(ctx, exec)
+	if err != nil {
+		return PaginatedTokens{}, err
+	}
+
+	rows, err := queries.QueryPaginatedTokens(
+		ctx,
+		exec,
+		db.QueryPaginatedTokensParams{
+			Limit:  pageSize,
+			Offset: offset,
+		},
+	)
+	if err != nil {
+		return PaginatedTokens{}, err
+	}
+
+	tokens := make([]Token, len(rows))
+	for i, row := range rows {
+		token, convErr := rowToToken(row)
+		if convErr != nil {
+			return PaginatedTokens{}, convErr
+		}
+		tokens[i] = token
+	}
+
+	totalPages := (totalCount + int64(pageSize) - 1) / int64(pageSize)
+
+	return PaginatedTokens{
+		Tokens:     tokens,
+		TotalCount: totalCount,
+		Page:       page,
+		PageSize:   pageSize,
+		TotalPages: totalPages,
+	}, nil
+}
+
+func FindTokenByScopeAndHash(
+	ctx context.Context,
+	exec storage.Executor,
+	pepper string,
+	scope string,
+	token string,
+) (Token, error) {
+	hash := HashForStorage(token, pepper)
+
+	row, err := queries.QueryTokenByScopeAndHash(ctx, exec, db.QueryTokenByScopeAndHashParams{
+		Scope: scope,
+		Hash:  hash,
+	})
+	if err != nil {
+		return Token{}, err
+	}
+
+	return rowToToken(row)
+}
+
+func rowToToken(row db.Token) (Token, error) {
+	return Token{
+		ID:        row.ID,
+		CreatedAt: row.CreatedAt.Time,
+		UpdatedAt: row.UpdatedAt.Time,
+		Scope:     row.Scope,
+		ExpiresAt: row.ExpiresAt.Time,
+		Hash:      row.Hash,
+		MetaData:  row.MetaData,
+	}, nil
+}

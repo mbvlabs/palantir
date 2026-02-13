@@ -1,0 +1,96 @@
+// Package router provides the application routes and middleware setup.
+package router
+
+import (
+	"encoding/gob"
+	"net/http"
+
+	"palantir/config"
+	"palantir/router/cookies"
+	"palantir/router/middleware"
+	"palantir/telemetry"
+
+	"github.com/google/uuid"
+	"github.com/gorilla/sessions"
+	"github.com/labstack/echo-contrib/session"
+	"github.com/labstack/echo/v5"
+	echomw "github.com/labstack/echo/v5/middleware"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+)
+
+type Router struct {
+	e       *echo.Echo
+	Handler http.Handler
+}
+
+func New(
+	enableHTTPInstrumentation bool,
+	globalMiddleware []echo.MiddlewareFunc,
+) (*Router, error) {
+	gob.Register(uuid.UUID{})
+	gob.Register(cookies.FlashMessage{})
+
+	router := echo.New()
+
+	router.Use(globalMiddleware...)
+
+	handler := http.Handler(router)
+	if enableHTTPInstrumentation {
+		handler = otelhttp.NewHandler(router, "http")
+	}
+
+	return &Router{
+		e:       router,
+		Handler: handler,
+	}, nil
+}
+
+func SetupGlobalMiddleware(
+	cfg config.Config,
+	tel *telemetry.Telemetry,
+	authKey []byte,
+	encKey []byte,
+	mw middleware.Middleware,
+	csrfName string,
+) ([]echo.MiddlewareFunc, error) {
+	csrfMiddleware, err := mw.CSRFMiddleware(cfg, csrfName)
+	if err != nil {
+		return nil, err
+	}
+
+	// Order matters: middlewares execute in the order listed, with Recover last
+	// to catch panics from all preceding middlewares.
+	middlewares := []echo.MiddlewareFunc{
+		mw.TraceRouteAttributes(tel),
+		mw.Logger(tel),
+		session.Middleware(
+			sessions.NewCookieStore(
+				authKey,
+				encKey,
+			),
+		),
+		mw.ValidateSession,
+		mw.RegisterAppContext,
+		mw.RegisterFlashMessagesContext,
+		mw.TrackReturnTo,
+		echomw.CORSWithConfig(echomw.CORSConfig{
+			AllowOrigins:     []string{"https://*", "http://*"},
+			AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"},
+			AllowHeaders:     []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token"},
+			AllowCredentials: true,
+			MaxAge:           300,
+		}),
+		csrfMiddleware,
+		echomw.Recover(),
+	}
+
+	return middlewares, nil
+}
+
+func (r *Router) RegisterCustomRoutes(
+	riverHandler interface{ ServeHTTP(http.ResponseWriter, *http.Request) },
+	notFoundHandler echo.HandlerFunc,
+) {
+	r.e.Any("/riverui*", echo.WrapHandler(riverHandler))
+	r.e.RouteNotFound("/*", notFoundHandler)
+}

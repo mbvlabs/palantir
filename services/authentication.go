@@ -1,0 +1,51 @@
+package services
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+
+	"palantir/internal/storage"
+	"palantir/models"
+)
+
+var (
+	ErrInvalidCredentials = errors.New("invalid email or password")
+	ErrEmailNotVerified   = errors.New("email not verified")
+)
+
+type LoginData struct {
+	Email    string
+	Password string
+}
+
+func AuthenticateUser(
+	ctx context.Context,
+	db storage.Pool,
+	salt string,
+	data LoginData,
+) (models.User, error) {
+	user, err := models.FindUserByEmail(ctx, db.Conn(), data.Email)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return models.User{}, ErrInvalidCredentials
+		}
+
+		return models.User{}, err
+	}
+
+	validPassword, err := user.ValidPassword(data.Password, salt)
+	if err != nil {
+		return models.User{}, err
+	}
+
+	if !validPassword {
+		return models.User{}, errors.New("invalid password")
+	}
+
+	if user.EmailValidatedAt.IsZero() {
+		return models.User{}, ErrEmailNotVerified
+	}
+
+	return user, nil
+}

@@ -1,0 +1,54 @@
+// Package factories contains functionality for creating seed and development data
+package factories
+
+import (
+	"os"
+
+	"github.com/go-faker/faker/v4"
+)
+
+// TestPepper is the default pepper for testing
+// DO NOT use this in production - it should be overridden with your app's actual pepper
+var TestPepper = func() string {
+	if os.Getenv("PEPPER") != "" {
+		return os.Getenv("PEPPER")
+	}
+
+	return "1e2b79a0f441ecab7a96a932"
+}()
+
+// randomInt wraps faker.RandomInt and returns a default value if there's an error
+func randomInt(min, max int, defaultValue int32) int32 {
+	vals, err := faker.RandomInt(min, max)
+	if err != nil || len(vals) == 0 {
+		return defaultValue
+	}
+	return int32(vals[0])
+}
+
+// randomInt64 wraps faker.RandomInt and returns an int64 with a default value if there's an error
+func randomInt64(min, max int, defaultValue int64) int64 {
+	vals, err := faker.RandomInt(min, max)
+	if err != nil || len(vals) == 0 {
+		return defaultValue
+	}
+	return int64(vals[0])
+}
+
+// randomInt16 wraps faker.RandomInt and returns an int16 with a default value if there's an error
+func randomInt16(min, max int, defaultValue int16) int16 {
+	vals, err := faker.RandomInt(min, max)
+	if err != nil || len(vals) == 0 {
+		return defaultValue
+	}
+	return int16(vals[0])
+}
+
+// randomBool returns a random boolean value
+func randomBool() bool {
+	vals, err := faker.RandomInt(0, 1)
+	if err != nil || len(vals) == 0 {
+		return false
+	}
+	return vals[0] == 1
+}

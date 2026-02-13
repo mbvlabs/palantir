@@ -1,0 +1,170 @@
+package services
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"time"
+
+	"palantir/email"
+	"palantir/internal/storage"
+	"palantir/models"
+	"palantir/queue"
+	"palantir/queue/jobs"
+)
+
+const userEmailVerification = "user_email_verification"
+
+type RegisterUserData struct {
+	Email           string
+	Password        string
+	ConfirmPassword string
+}
+
+func RegisterUser(
+	ctx context.Context,
+	db storage.Pool,
+	insertOnly queue.InsertOnly,
+	salt string,
+	data RegisterUserData,
+) error {
+	tx, err := db.BeginTx(ctx)
+	if err != nil {
+		return err
+	}
+
+	user, err := models.CreateUser(ctx, tx, salt, models.CreateUserData{
+		Email: data.Email,
+		PasswordPair: models.PasswordPair{
+			Password:        data.Password,
+			ConfirmPassword: data.ConfirmPassword,
+		},
+	})
+	if err != nil {
+		return err
+	}
+
+	meta, err := json.Marshal(map[string]string{
+		"email": user.Email,
+	})
+	if err != nil {
+		return err
+	}
+
+	code, err := models.CreateCodeToken(
+		ctx,
+		tx,
+		salt,
+		userEmailVerification,
+		time.Now().Add(24*time.Hour),
+		meta,
+	)
+	if err != nil {
+		return err
+	}
+
+	vEmail := email.VerifyEmail{VerificationCode: code}
+
+	html, err := vEmail.ToHTML()
+	if err != nil {
+		return err
+	}
+
+	text, err := vEmail.ToText()
+	if err != nil {
+		return err
+	}
+
+	_, err = insertOnly.InsertTx(ctx, tx, jobs.SendTransactionalEmailArgs{
+		Data: email.TransactionalData{
+			To:       user.Email,
+			From:     "noreply@andurel.com",
+			Subject:  "Verify Your Email Address",
+			HTMLBody: html,
+			TextBody: text,
+		},
+	}, nil)
+	if err != nil {
+		return err
+	}
+
+	return tx.Commit(ctx)
+}
+
+var (
+	ErrInvalidVerificationCode = errors.New("invalid verification code")
+	ErrExpiredVerificationCode = errors.New("verification code has expired")
+	ErrUserNotFound            = errors.New("user not found")
+)
+
+type VerifyEmailData struct {
+	Code string
+}
+
+func VerifyEmail(
+	ctx context.Context,
+	db storage.Pool,
+	salt string,
+	data VerifyEmailData,
+) (models.User, error) {
+	tx, err := db.BeginTx(ctx)
+	if err != nil {
+		return models.User{}, err
+	}
+	defer tx.Rollback(ctx)
+
+	token, err := models.FindTokenByScopeAndHash(
+		ctx,
+		tx,
+		salt,
+		userEmailVerification,
+		data.Code,
+	)
+	if err != nil {
+		return models.User{}, ErrInvalidVerificationCode
+	}
+
+	if !token.IsValid(data.Code, salt) {
+		return models.User{}, ErrExpiredVerificationCode
+	}
+
+	var meta map[string]string
+	if err := json.Unmarshal(token.MetaData, &meta); err != nil {
+		return models.User{}, err
+	}
+
+	email, ok := meta["email"]
+	if !ok {
+		return models.User{}, errors.New("token metadata missing email")
+	}
+
+	user, err := models.FindUserByEmail(ctx, tx, email)
+	if err != nil {
+		return models.User{}, err
+	}
+
+	user, err = models.UpdateUser(ctx, tx, models.UpdateUserData{
+		ID:    user.ID,
+		Email: user.Email,
+		EmailValidatedAt: sql.NullTime{
+			Time:  time.Now(),
+			Valid: true,
+		},
+		Password: user.Password,
+		IsAdmin:  user.IsAdmin,
+	})
+	if err != nil {
+		return models.User{}, err
+	}
+
+	if err := models.DestroyToken(ctx, tx, token.ID); err != nil {
+		return models.User{}, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return models.User{}, err
+	}
+
+	return user, nil
+}
