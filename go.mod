@@ -19,6 +19,7 @@ require (
 	github.com/labstack/echo/v5 v5.0.3
 	github.com/lmittmann/tint v1.1.3
 	github.com/maypok86/otter/v2 v2.3.0
+	github.com/mssola/useragent v1.0.0
 	github.com/riverqueue/river v0.30.2
 	github.com/riverqueue/river/riverdriver/riverpgxv5 v0.30.2
 	github.com/riverqueue/river/rivertype v0.30.2

@@ -13,6 +13,7 @@ import (
 	"palantir/config"
 	"palantir/controllers"
 	"palantir/database"
+	"palantir/services"
 	"palantir/internal/server"
 	"palantir/internal/storage"
 	"palantir/queue"
@@ -82,6 +83,27 @@ func setupControllers(
 	}
 
 	if err := r.RegisterRegistrationsRoutes(registrations); err != nil {
+		return err
+	}
+
+	geo := services.NewIPAPIGeoResolver()
+	collect := controllers.NewCollect(db, geo)
+	if err := r.RegisterCollectRoutes(collect); err != nil {
+		return err
+	}
+
+	tracking := controllers.NewTracking()
+	if err := r.RegisterTrackingRoutes(tracking); err != nil {
+		return err
+	}
+
+	websites := controllers.NewWebsites(db)
+	if err := r.RegisterWebsitesRoutes(websites); err != nil {
+		return err
+	}
+
+	dashboard := controllers.NewDashboard(db)
+	if err := r.RegisterDashboardRoutes(dashboard); err != nil {
 		return err
 	}
 

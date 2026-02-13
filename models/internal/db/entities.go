@@ -60,6 +60,39 @@ func (ns NullRiverJobState) Value() (driver.Value, error) {
 	return string(ns.RiverJobState), nil
 }
 
+type Event struct {
+	ID          uuid.UUID
+	CreatedAt   pgtype.Timestamptz
+	WebsiteID   uuid.UUID
+	Url         string
+	EventName   string
+	EventData   []byte
+	VisitorHash pgtype.Text
+	CountryCode pgtype.Text
+	CountryName pgtype.Text
+	City        pgtype.Text
+	Region      pgtype.Text
+}
+
+type Pageview struct {
+	ID          uuid.UUID
+	CreatedAt   pgtype.Timestamptz
+	WebsiteID   uuid.UUID
+	Url         string
+	Referrer    pgtype.Text
+	Browser     pgtype.Text
+	Os          pgtype.Text
+	Device      pgtype.Text
+	Country     pgtype.Text
+	Language    pgtype.Text
+	ScreenWidth pgtype.Int4
+	VisitorHash pgtype.Text
+	CountryCode pgtype.Text
+	CountryName pgtype.Text
+	City        pgtype.Text
+	Region      pgtype.Text
+}
+
 type RiverClient struct {
 	ID        string
 	CreatedAt pgtype.Timestamptz
@@ -139,4 +172,13 @@ type User struct {
 	EmailValidatedAt pgtype.Timestamptz
 	Password         []byte
 	IsAdmin          bool
+}
+
+type Website struct {
+	ID        uuid.UUID
+	CreatedAt pgtype.Timestamptz
+	UpdatedAt pgtype.Timestamptz
+	UserID    uuid.UUID
+	Name      string
+	Domain    string
 }

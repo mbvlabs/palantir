@@ -1,0 +1,194 @@
+package views
+
+import (
+	"fmt"
+	"net/http"
+	"palantir/config"
+	"palantir/internal/hypermedia"
+	"palantir/models"
+	"palantir/router/routes"
+	"palantir/views/components"
+)
+
+func trackingSnippet(websiteID string) string {
+	return fmt.Sprintf("<script defer src=\"%s%s\" data-website-id=\"%s\"></script>", config.BaseURL, routes.TrackingScript.URL(), websiteID)
+}
+
+templ WebsitesIndex(websites []models.Website) {
+	@base(SetTitle("My Websites")) {
+		<main class="flex-1">
+			<div class="container mx-auto max-w-4xl px-4 py-8">
+				<div class="flex items-center justify-between mb-6">
+					<h1 class="text-2xl font-bold">My Websites</h1>
+					<a href={ routes.WebsiteNew.URL() } class="inline-flex items-center justify-center gap-2 whitespace-nowrap font-medium transition-colors bg-primary text-primary-content shadow-sm hover:bg-primary/90 h-9 px-4 py-2 text-sm rounded-field">
+						Add Website
+					</a>
+				</div>
+				if len(websites) == 0 {
+					@components.Card() {
+						@components.CardContent() {
+							<div class="text-center py-8">
+								<p class="text-base-content/60 mb-4">You haven't added any websites yet.</p>
+								<a href={ routes.WebsiteNew.URL() } class="inline-flex items-center justify-center gap-2 whitespace-nowrap font-medium transition-colors bg-primary text-primary-content shadow-sm hover:bg-primary/90 h-9 px-4 py-2 text-sm rounded-field">
+									Add your first website
+								</a>
+							</div>
+						}
+					}
+				} else {
+					@components.Table() {
+						@components.TableHeader() {
+							@components.TableRow() {
+								@components.TableHead() {
+									Name 
+								}
+								@components.TableHead() {
+									Domain 
+								}
+								@components.TableHead() {
+									Actions 
+								}
+							}
+						}
+						@components.TableBody() {
+							for _, website := range websites {
+								@components.TableRow() {
+									@components.TableCell() {
+										<a href={ routes.WebsiteDashboard.URL(website.ID) } class="font-medium hover:underline">
+											{ website.Name }
+										</a>
+									}
+									@components.TableCell() {
+										{ website.Domain }
+									}
+									@components.TableCell() {
+										<div class="flex items-center gap-2">
+											<a href={ routes.WebsiteDashboard.URL(website.ID) } class="text-sm text-primary hover:underline">Dashboard</a>
+											<a href={ routes.WebsiteShow.URL(website.ID) } class="text-sm text-base-content/60 hover:underline">Details</a>
+										</div>
+									}
+								}
+							}
+						}
+					}
+				}
+			</div>
+		</main>
+	}
+}
+
+templ WebsitesNew() {
+	@base(SetTitle("Add Website")) {
+		<main class="flex-1">
+			<div class="container mx-auto max-w-md px-4 py-8">
+				<h1 class="text-2xl font-bold mb-6">Add Website</h1>
+				@components.Card() {
+					@components.CardContent() {
+						@components.Form(components.FormProps{URL: routes.WebsiteCreate.URL(), Action: http.MethodPost}) {
+							<div class="space-y-1">
+								@components.Label(components.LabelProps{Text: "Name"}).WithFor("name").WithRequired(true).Render()
+								@components.Input("name").WithID("name").WithPlaceholder("My Blog").WithRequired(true).Render()
+							</div>
+							<div class="space-y-1">
+								@components.Label(components.LabelProps{Text: "Domain"}).WithFor("domain").WithRequired(true).Render()
+								@components.Input("domain").WithID("domain").WithPlaceholder("example.com").WithRequired(true).Render()
+							</div>
+							<div class="flex gap-2 pt-2">
+								@components.Button(components.ButtonProps{Label: "Add Website"}).WithType(components.ButtonTypeSubmit).Render()
+								<a href={ routes.WebsiteIndex.URL() } class="inline-flex items-center justify-center gap-2 whitespace-nowrap font-medium transition-colors border border-base-300 bg-base-100 shadow-sm hover:bg-base-200 h-9 px-4 py-2 text-sm rounded-field">
+									Cancel
+								</a>
+							</div>
+						}
+					}
+				}
+			</div>
+		</main>
+	}
+}
+
+templ WebsitesShow(website models.Website) {
+	@base(SetTitle(website.Name)) {
+		<main class="flex-1">
+			<div class="container mx-auto max-w-2xl px-4 py-8">
+				<div class="flex items-center justify-between mb-6">
+					<h1 class="text-2xl font-bold">{ website.Name }</h1>
+					<div class="flex items-center gap-2">
+						<a href={ routes.WebsiteDashboard.URL(website.ID) } class="inline-flex items-center justify-center gap-2 whitespace-nowrap font-medium transition-colors bg-primary text-primary-content shadow-sm hover:bg-primary/90 h-9 px-4 py-2 text-sm rounded-field">
+							View Dashboard
+						</a>
+						<a href={ routes.WebsiteEdit.URL(website.ID) } class="inline-flex items-center justify-center gap-2 whitespace-nowrap font-medium transition-colors border border-base-300 bg-base-100 shadow-sm hover:bg-base-200 h-9 px-4 py-2 text-sm rounded-field">
+							Edit
+						</a>
+					</div>
+				</div>
+				@components.Card() {
+					@components.CardHeader() {
+						@components.CardTitle("Website Details")
+					}
+					@components.CardContent() {
+						<dl class="space-y-3">
+							<div>
+								<dt class="text-sm font-medium text-base-content/60">Domain</dt>
+								<dd class="text-sm">{ website.Domain }</dd>
+							</div>
+							<div>
+								<dt class="text-sm font-medium text-base-content/60">Website ID</dt>
+								<dd class="text-sm font-mono">{ website.ID.String() }</dd>
+							</div>
+						</dl>
+					}
+				}
+				<div class="mt-6">
+					@components.Card() {
+						@components.CardHeader() {
+							@components.CardTitle("Tracking Code")
+							@components.CardDescription("Add this script to your website to start tracking page views.")
+						}
+						@components.CardContent() {
+							<div class="relative">
+								@components.Code(components.CodeProps{Content: trackingSnippet(website.ID.String())}).Render()
+								@components.CopyButton(trackingSnippet(website.ID.String())).Render()
+							</div>
+						}
+					}
+				</div>
+				<div class="mt-6 flex justify-end">
+					<form data-on:submit={ hypermedia.DataAction(http.MethodDelete, routes.WebsiteDestroy.URL(website.ID)) }>
+						@components.Button(components.ButtonProps{Label: "Delete Website"}).MakeDestructive().WithSize(components.ButtonSizeSm).Render()
+					</form>
+				</div>
+			</div>
+		</main>
+	}
+}
+
+templ WebsitesEdit(website models.Website) {
+	@base(SetTitle("Edit " + website.Name)) {
+		<main class="flex-1">
+			<div class="container mx-auto max-w-md px-4 py-8">
+				<h1 class="text-2xl font-bold mb-6">Edit Website</h1>
+				@components.Card() {
+					@components.CardContent() {
+						<form class="space-y-4 pt-4" data-on:submit={ hypermedia.DataAction(http.MethodPut, routes.WebsiteUpdate.URL(website.ID)) }>
+							<div class="space-y-1">
+								@components.Label(components.LabelProps{Text: "Name"}).WithFor("name").WithRequired(true).Render()
+								@components.Input("name").WithID("name").WithValue(website.Name).WithRequired(true).Render()
+							</div>
+							<div class="space-y-1">
+								@components.Label(components.LabelProps{Text: "Domain"}).WithFor("domain").WithRequired(true).Render()
+								@components.Input("domain").WithID("domain").WithValue(website.Domain).WithRequired(true).Render()
+							</div>
+							<div class="flex gap-2 pt-2">
+								@components.Button(components.ButtonProps{Label: "Update Website"}).WithType(components.ButtonTypeSubmit).Render()
+								<a href={ routes.WebsiteShow.URL(website.ID) } class="inline-flex items-center justify-center gap-2 whitespace-nowrap font-medium transition-colors border border-base-300 bg-base-100 shadow-sm hover:bg-base-200 h-9 px-4 py-2 text-sm rounded-field">
+									Cancel
+								</a>
+							</div>
+						</form>
+					}
+				}
+			</div>
+		</main>
+	}
+}

@@ -3,6 +3,7 @@ package views
 import (
 	"palantir/views/components"
 	"palantir/router/cookies"
+	"palantir/router/routes"
 	"time"
 )
 
@@ -11,6 +12,7 @@ templ base(headOpts ...HeadDataOption) {
 	<html lang="en" class="dark">
 		@SetupHead(ctx, headOpts...)
 		<body class="min-h-screen flex flex-col bg-base-200 text-base-content">
+			@navbar()
 			{ children... }
 			<footer>
 				<div class="container mx-auto py-4 text-center text-sm text-base-content/50">
@@ -24,4 +26,23 @@ templ base(headOpts ...HeadDataOption) {
 			}
 		</div>
 	</html>
+}
+
+templ navbar() {
+	<nav class="border-b border-base-300 bg-base-100">
+		<div class="container mx-auto flex items-center justify-between h-14 px-4">
+			<a href={ routes.HomePage.URL() } class="text-lg font-bold">Palantir</a>
+			<div class="flex items-center gap-4">
+				if cookies.GetAppCtx(ctx).IsAuthenticated {
+					<a href={ routes.WebsiteIndex.URL() } class="text-sm text-base-content/70 hover:text-base-content">Websites</a>
+					<form data-on:submit={ "@delete('" + routes.SessionDestroy.URL() + "')" }>
+						<button type="submit" class="text-sm text-base-content/70 hover:text-base-content">Logout</button>
+					</form>
+				} else {
+					<a href={ routes.SessionNew.URL() } class="text-sm text-base-content/70 hover:text-base-content">Login</a>
+					<a href={ routes.RegistrationNew.URL() } class="text-sm text-base-content/70 hover:text-base-content">Sign up</a>
+				}
+			</div>
+		</div>
+	</nav>
 }

@@ -74,7 +74,12 @@ func SetupGlobalMiddleware(
 		mw.RegisterFlashMessagesContext,
 		mw.TrackReturnTo,
 		echomw.CORSWithConfig(echomw.CORSConfig{
-			AllowOrigins:     []string{"https://*", "http://*"},
+			UnsafeAllowOriginFunc: func(_ *echo.Context, origin string) (allowedOrigin string, allowed bool, err error) {
+				if origin == "" {
+					return "", false, nil
+				}
+				return origin, true, nil
+			},
 			AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"},
 			AllowHeaders:     []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token"},
 			AllowCredentials: true,

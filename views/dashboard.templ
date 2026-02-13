@@ -1,0 +1,263 @@
+package views
+
+import (
+	"encoding/json"
+	"fmt"
+	"palantir/models"
+	"palantir/router/routes"
+	"palantir/views/components"
+)
+
+templ DashboardShow(website models.Website, stats models.DashboardStats, period string, bucket string) {
+	@base(SetTitle(website.Name + " Dashboard")) {
+		<main class="flex-1">
+			<div class="container mx-auto max-w-6xl px-4 py-8">
+				<div class="flex items-center justify-between mb-6">
+					<div>
+						@components.Breadcrumb() {
+							@components.BreadcrumbItem() {
+								@components.BreadcrumbLink("Websites", routes.WebsiteIndex.URL(), false)
+							}
+							@components.BreadcrumbSeparator()
+							@components.BreadcrumbItem() {
+								@components.BreadcrumbLink(website.Name, "", true)
+							}
+						}
+						<h1 class="text-2xl font-bold mt-2">{ website.Name }</h1>
+						<p class="text-sm text-base-content/60">{ website.Domain }</p>
+					</div>
+					<a href={ routes.WebsiteShow.URL(website.ID) } class="inline-flex items-center justify-center gap-2 whitespace-nowrap font-medium transition-colors border border-base-300 bg-base-100 shadow-sm hover:bg-base-200 h-9 px-4 py-2 text-sm rounded-field">
+						Settings
+					</a>
+				</div>
+				<div class="flex flex-wrap gap-2 mb-6">
+					@periodLink(website.ID.String(), "Today", "today", period)
+					@periodLink(website.ID.String(), "Last 7 days", "7d", period)
+					@periodLink(website.ID.String(), "Last 30 days", "30d", period)
+					@periodLink(website.ID.String(), "This month", "month", period)
+					@customDateToggle(website.ID.String(), period)
+				</div>
+				if period == "custom" {
+					<form class="flex items-end gap-3 mb-6" method="get" action={ templ.SafeURL(fmt.Sprintf("/websites/%s/dashboard", website.ID.String())) }>
+						<input type="hidden" name="period" value="custom"/>
+						<div>
+							<label class="text-xs text-base-content/60 block mb-1">Start date</label>
+							<input type="date" name="start" class="input input-bordered input-sm"/>
+						</div>
+						<div>
+							<label class="text-xs text-base-content/60 block mb-1">End date</label>
+							<input type="date" name="end" class="input input-bordered input-sm"/>
+						</div>
+						<button type="submit" class="btn btn-primary btn-sm">Apply</button>
+					</form>
+				}
+				<div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+					@statCard("Total Page Views", fmt.Sprintf("%d", stats.TotalPageviews))
+					@statCard("Unique Visitors", fmt.Sprintf("%d", stats.TotalUniqueVisitors))
+					@statCard("Top Page", topItem(stats.TopPages))
+				</div>
+				@chartCard("Pageviews Over Time", "pageviewsChart", timeBucketLabels(stats.PageviewsOverTime, bucket), timeBucketValues(stats.PageviewsOverTime), "oklch(var(--p))")
+				@chartCard("Unique Visitors Over Time", "visitorsChart", timeBucketLabels(stats.VisitorsOverTime, bucket), timeBucketValues(stats.VisitorsOverTime), "oklch(var(--s))")
+				<div class="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
+					@breakdownCard("Top Pages", stats.TopPages)
+					@breakdownCard("Referrers", stats.TopReferrers)
+					@geoBreakdownCard("Top Countries", stats.TopCountries)
+					@geoBreakdownCard("Top Cities", stats.TopCities)
+					@breakdownCard("Browsers", stats.Browsers)
+					@breakdownCard("Operating Systems", stats.OSes)
+					@breakdownCard("Devices", stats.Devices)
+					@breakdownCard("Events", stats.TopEvents)
+				</div>
+				if len(stats.EventsOverTime) > 0 {
+					<div class="mt-4">
+						@chartCard("Events Over Time", "eventsChart", timeBucketLabels(stats.EventsOverTime, bucket), timeBucketValues(stats.EventsOverTime), "oklch(var(--a))")
+					</div>
+				}
+			</div>
+		</main>
+		<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+		@chartInitScript()
+	}
+}
+
+func topItem(items []models.BreakdownItem) string {
+	if len(items) == 0 {
+		return "-"
+	}
+	return items[0].Name
+}
+
+func timeBucketLabels(buckets []models.TimeBucket, bucketType string) string {
+	labels := make([]string, len(buckets))
+	for i, b := range buckets {
+		if bucketType == "hour" {
+			labels[i] = b.Time.Format("Jan 02 15:00")
+		} else {
+			labels[i] = b.Time.Format("Jan 02")
+		}
+	}
+	data, _ := json.Marshal(labels)
+	return string(data)
+}
+
+func timeBucketValues(buckets []models.TimeBucket) string {
+	values := make([]int64, len(buckets))
+	for i, b := range buckets {
+		values[i] = b.Count
+	}
+	data, _ := json.Marshal(values)
+	return string(data)
+}
+
+templ chartCard(title, canvasID, labelsJSON, valuesJSON, color string) {
+	@components.Card() {
+		@components.CardHeader() {
+			@components.CardTitle(title)
+		}
+		@components.CardContent() {
+			if labelsJSON == "[]" || labelsJSON == "null" {
+				<p class="text-sm text-base-content/60">No data yet</p>
+			} else {
+				<canvas
+					id={ canvasID }
+					class="w-full palantir-chart"
+					style="height: 250px;"
+					data-labels={ labelsJSON }
+					data-values={ valuesJSON }
+					data-color={ color }
+				></canvas>
+			}
+		}
+	}
+}
+
+templ chartInitScript() {
+	<script>
+		document.addEventListener('DOMContentLoaded', function() {
+			document.querySelectorAll('.palantir-chart').forEach(function(canvas) {
+				var labels = JSON.parse(canvas.getAttribute('data-labels'));
+				var values = JSON.parse(canvas.getAttribute('data-values'));
+				var color = canvas.getAttribute('data-color');
+				new Chart(canvas, {
+					type: 'line',
+					data: {
+						labels: labels,
+						datasets: [{
+							data: values,
+							borderColor: color,
+							backgroundColor: color.replace(')', ' / 0.1)'),
+							fill: true,
+							tension: 0.3,
+							pointRadius: 2,
+						}]
+					},
+					options: {
+						responsive: true,
+						maintainAspectRatio: false,
+						plugins: { legend: { display: false } },
+						scales: {
+							y: { beginAtZero: true, ticks: { precision: 0 } },
+							x: { ticks: { maxTicksLimit: 12 } }
+						}
+					}
+				});
+			});
+		});
+	</script>
+}
+
+templ periodLink(websiteID, label, value, current string) {
+	if current == value || (current == "" && value == "7d") {
+		<span class="inline-flex items-center justify-center h-8 px-3 text-sm font-medium rounded-field bg-primary text-primary-content">
+			{ label }
+		</span>
+	} else {
+		<a
+			href={ templ.SafeURL(fmt.Sprintf("/websites/%s/dashboard?period=%s", websiteID, value)) }
+			class="inline-flex items-center justify-center h-8 px-3 text-sm font-medium rounded-field border border-base-300 bg-base-100 hover:bg-base-200 transition-colors"
+		>
+			{ label }
+		</a>
+	}
+}
+
+templ customDateToggle(websiteID, current string) {
+	if current == "custom" {
+		<span class="inline-flex items-center justify-center h-8 px-3 text-sm font-medium rounded-field bg-primary text-primary-content">
+			Custom
+		</span>
+	} else {
+		<a
+			href={ templ.SafeURL(fmt.Sprintf("/websites/%s/dashboard?period=custom", websiteID)) }
+			class="inline-flex items-center justify-center h-8 px-3 text-sm font-medium rounded-field border border-base-300 bg-base-100 hover:bg-base-200 transition-colors"
+		>
+			Custom
+		</a>
+	}
+}
+
+templ statCard(title, value string) {
+	@components.Card() {
+		@components.CardContent() {
+			<div class="pt-4">
+				<p class="text-sm font-medium text-base-content/60">{ title }</p>
+				<p class="text-2xl font-bold mt-1 truncate">{ value }</p>
+			</div>
+		}
+	}
+}
+
+templ breakdownCard(title string, items []models.BreakdownItem) {
+	@components.Card() {
+		@components.CardHeader() {
+			@components.CardTitle(title)
+		}
+		@components.CardContent() {
+			if len(items) == 0 {
+				<p class="text-sm text-base-content/60">No data yet</p>
+			} else {
+				<div class="space-y-2">
+					for _, item := range items {
+						<div class="flex items-center justify-between text-sm">
+							<span class="truncate mr-2">
+								if item.Name == "" {
+									(direct)
+								} else {
+									{ item.Name }
+								}
+							</span>
+							<span class="font-medium shrink-0">{ fmt.Sprintf("%d", item.Views) }</span>
+						</div>
+					}
+				</div>
+			}
+		}
+	}
+}
+
+templ geoBreakdownCard(title string, items []models.GeoBreakdownItem) {
+	@components.Card() {
+		@components.CardHeader() {
+			@components.CardTitle(title)
+		}
+		@components.CardContent() {
+			if len(items) == 0 {
+				<p class="text-sm text-base-content/60">No data yet</p>
+			} else {
+				<div class="space-y-2">
+					for _, item := range items {
+						<div class="flex items-center justify-between text-sm">
+							<span class="truncate mr-2">
+								{ item.Name }
+								if item.Code != "" {
+									<span class="text-base-content/40 ml-1">({ item.Code })</span>
+								}
+							</span>
+							<span class="font-medium shrink-0">{ fmt.Sprintf("%d", item.Views) }</span>
+						</div>
+					}
+				</div>
+			}
+		}
+	}
+}
