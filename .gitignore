@@ -1,6 +1,5 @@
-node_modules
 .env
 bin
 tmp
-palantir.db
-.andurel-upgrade-state.json
+CLAUDE.md
+AGENT.md
