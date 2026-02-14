@@ -109,8 +109,7 @@ func parseDateRange(period, startParam, endParam string) (time.Time, time.Time) 
 
 	switch period {
 	case "today":
-		startDate := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
-		return startDate, endDate
+		return now.Add(-24 * time.Hour), now
 	case "30d":
 		return endDate.AddDate(0, 0, -30), endDate
 	case "month":
