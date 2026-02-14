@@ -99,19 +99,29 @@ type GeoBreakdownItem struct {
 }
 
 type DashboardStats struct {
-	TotalPageviews       int64
-	TotalUniqueVisitors  int64
-	PageviewsOverTime    []TimeBucket
-	VisitorsOverTime     []TimeBucket
-	TopPages             []BreakdownItem
-	TopReferrers         []BreakdownItem
-	Browsers             []BreakdownItem
-	OSes                 []BreakdownItem
-	Devices              []BreakdownItem
-	TopCountries         []GeoBreakdownItem
-	TopCities            []GeoBreakdownItem
-	TopEvents            []BreakdownItem
-	EventsOverTime       []TimeBucket
+	TotalPageviews      int64
+	TotalUniqueVisitors int64
+	BounceCount         int64
+	ViewsPerVisitor     float64
+	BounceRate          float64
+
+	// Percentage changes vs previous period
+	PageviewsChange      float64
+	UniqueVisitorsChange float64
+	ViewsPerVisitorChange float64
+	BounceRateChange     float64
+
+	PageviewsOverTime []TimeBucket
+	VisitorsOverTime  []TimeBucket
+	TopPages          []BreakdownItem
+	TopReferrers      []BreakdownItem
+	Browsers          []BreakdownItem
+	OSes              []BreakdownItem
+	Devices           []BreakdownItem
+	TopCountries      []GeoBreakdownItem
+	TopCities         []GeoBreakdownItem
+	TopEvents         []BreakdownItem
+	EventsOverTime    []TimeBucket
 }
 
 func GetDashboardStats(
@@ -120,6 +130,8 @@ func GetDashboardStats(
 	websiteID uuid.UUID,
 	startDate time.Time,
 	endDate time.Time,
+	prevStartDate time.Time,
+	prevEndDate time.Time,
 	bucket string,
 ) (DashboardStats, error) {
 	dateParams := func() (pgtype.Timestamptz, pgtype.Timestamptz) {
@@ -127,6 +139,9 @@ func GetDashboardStats(
 			pgtype.Timestamptz{Time: endDate, Valid: true}
 	}
 	start, end := dateParams()
+
+	prevStart := pgtype.Timestamptz{Time: prevStartDate, Valid: true}
+	prevEnd := pgtype.Timestamptz{Time: prevEndDate, Valid: true}
 
 	total, err := queries.QueryTotalPageviews(ctx, exec, db.QueryTotalPageviewsParams{
 		WebsiteID: websiteID,
@@ -145,6 +160,49 @@ func GetDashboardStats(
 	if err != nil {
 		return DashboardStats{}, err
 	}
+
+	bounceCount, err := queries.QueryBounceCount(ctx, exec, db.QueryBounceCountParams{
+		WebsiteID: websiteID,
+		StartDate: start,
+		EndDate:   end,
+	})
+	if err != nil {
+		return DashboardStats{}, err
+	}
+
+	// Previous period totals
+	prevTotal, err := queries.QueryTotalPageviews(ctx, exec, db.QueryTotalPageviewsParams{
+		WebsiteID: websiteID,
+		StartDate: prevStart,
+		EndDate:   prevEnd,
+	})
+	if err != nil {
+		return DashboardStats{}, err
+	}
+
+	prevUnique, err := queries.QueryTotalUniqueVisitors(ctx, exec, db.QueryTotalUniqueVisitorsParams{
+		WebsiteID: websiteID,
+		StartDate: prevStart,
+		EndDate:   prevEnd,
+	})
+	if err != nil {
+		return DashboardStats{}, err
+	}
+
+	prevBounce, err := queries.QueryBounceCount(ctx, exec, db.QueryBounceCountParams{
+		WebsiteID: websiteID,
+		StartDate: prevStart,
+		EndDate:   prevEnd,
+	})
+	if err != nil {
+		return DashboardStats{}, err
+	}
+
+	// Compute derived metrics
+	viewsPerVisitor := computeRatio(total, totalUnique)
+	prevViewsPerVisitor := computeRatio(prevTotal, prevUnique)
+	bounceRate := computeRatio(bounceCount*100, totalUnique)
+	prevBounceRate := computeRatio(prevBounce*100, prevUnique)
 
 	pvBucketRows, err := queries.QueryPageviewsTimeBucketed(ctx, exec, db.QueryPageviewsTimeBucketedParams{
 		WebsiteID: websiteID,
@@ -307,19 +365,26 @@ func GetDashboardStats(
 	eventsOverTime := fillTimeBuckets(eventsSparse, startDate, endDate, bucket)
 
 	return DashboardStats{
-		TotalPageviews:      total,
-		TotalUniqueVisitors: totalUnique,
-		PageviewsOverTime:   pvOverTime,
-		VisitorsOverTime:    uvOverTime,
-		TopPages:            topPages,
-		TopReferrers:        topReferrers,
-		Browsers:            browsers,
-		OSes:                oses,
-		Devices:             devices,
-		TopCountries:        countries,
-		TopCities:           cities,
-		TopEvents:           topEvents,
-		EventsOverTime:      eventsOverTime,
+		TotalPageviews:        total,
+		TotalUniqueVisitors:   totalUnique,
+		BounceCount:           bounceCount,
+		ViewsPerVisitor:       viewsPerVisitor,
+		BounceRate:            bounceRate,
+		PageviewsChange:       percentChange(prevTotal, total),
+		UniqueVisitorsChange:  percentChange(prevUnique, totalUnique),
+		ViewsPerVisitorChange: percentChangeFloat(prevViewsPerVisitor, viewsPerVisitor),
+		BounceRateChange:      -percentChangeFloat(prevBounceRate, bounceRate), // negate: decrease is good
+		PageviewsOverTime:     pvOverTime,
+		VisitorsOverTime:      uvOverTime,
+		TopPages:              topPages,
+		TopReferrers:          topReferrers,
+		Browsers:              browsers,
+		OSes:                  oses,
+		Devices:               devices,
+		TopCountries:          countries,
+		TopCities:             cities,
+		TopEvents:             topEvents,
+		EventsOverTime:        eventsOverTime,
 	}, nil
 }
 
@@ -357,6 +422,33 @@ func truncateToBucket(t time.Time, bucket string) time.Time {
 		return time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), 0, 0, 0, t.Location())
 	}
 	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location())
+}
+
+func percentChange(prev, current int64) float64 {
+	if prev == 0 {
+		if current == 0 {
+			return 0
+		}
+		return 100
+	}
+	return (float64(current) - float64(prev)) / float64(prev) * 100
+}
+
+func percentChangeFloat(prev, current float64) float64 {
+	if prev == 0 {
+		if current == 0 {
+			return 0
+		}
+		return 100
+	}
+	return (current - prev) / prev * 100
+}
+
+func computeRatio(numerator, denominator int64) float64 {
+	if denominator == 0 {
+		return 0
+	}
+	return float64(numerator) / float64(denominator)
 }
 
 func rowToPageview(row db.Pageview) Pageview {

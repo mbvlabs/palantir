@@ -85,6 +85,44 @@ func (q *Queries) InsertPageview(ctx context.Context, db DBTX, arg InsertPagevie
 	return i, err
 }
 
+const queryBounceCount = `-- name: QueryBounceCount :one
+SELECT count(*)::bigint AS bounce_visitors
+FROM (
+    SELECT visitor_hash
+    FROM pageviews
+    WHERE website_id = $1
+      AND created_at BETWEEN $2::timestamptz AND $3::timestamptz
+      AND visitor_hash IS NOT NULL
+    GROUP BY visitor_hash
+    HAVING count(*) = 1
+) AS single_page_visitors
+`
+
+type QueryBounceCountParams struct {
+	WebsiteID uuid.UUID
+	StartDate pgtype.Timestamptz
+	EndDate   pgtype.Timestamptz
+}
+
+// QueryBounceCount
+//
+//	SELECT count(*)::bigint AS bounce_visitors
+//	FROM (
+//	    SELECT visitor_hash
+//	    FROM pageviews
+//	    WHERE website_id = $1
+//	      AND created_at BETWEEN $2::timestamptz AND $3::timestamptz
+//	      AND visitor_hash IS NOT NULL
+//	    GROUP BY visitor_hash
+//	    HAVING count(*) = 1
+//	) AS single_page_visitors
+func (q *Queries) QueryBounceCount(ctx context.Context, db DBTX, arg QueryBounceCountParams) (int64, error) {
+	row := db.QueryRow(ctx, queryBounceCount, arg.WebsiteID, arg.StartDate, arg.EndDate)
+	var bounce_visitors int64
+	err := row.Scan(&bounce_visitors)
+	return bounce_visitors, err
+}
+
 const queryBrowserBreakdown = `-- name: QueryBrowserBreakdown :many
 select browser, count(*)::bigint as views
 from pageviews

@@ -86,3 +86,15 @@ where website_id = $1
   and created_at between sqlc.arg('start_date')::timestamptz and sqlc.arg('end_date')::timestamptz
   and city is not null and city != ''
 group by city, country_code order by views desc limit 10;
+
+-- name: QueryBounceCount :one
+SELECT count(*)::bigint AS bounce_visitors
+FROM (
+    SELECT visitor_hash
+    FROM pageviews
+    WHERE website_id = $1
+      AND created_at BETWEEN sqlc.arg('start_date')::timestamptz AND sqlc.arg('end_date')::timestamptz
+      AND visitor_hash IS NOT NULL
+    GROUP BY visitor_hash
+    HAVING count(*) = 1
+) AS single_page_visitors;

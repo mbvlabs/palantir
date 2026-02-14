@@ -1,6 +1,8 @@
 package controllers
 
 import (
+	"fmt"
+	"math"
 	"net/http"
 	"time"
 
@@ -44,10 +46,11 @@ func (d Dashboard) Show(etx *echo.Context) error {
 	startParam := etx.QueryParam("start")
 	endParam := etx.QueryParam("end")
 	startDate, endDate := parseDateRange(period, startParam, endParam)
+	prevStart, prevEnd := previousPeriodRange(startDate, endDate)
 
 	bucket := chooseBucket(startDate, endDate)
 
-	stats, err := models.GetDashboardStats(ctx, d.db.Conn(), websiteID, startDate, endDate, bucket)
+	stats, err := models.GetDashboardStats(ctx, d.db.Conn(), websiteID, startDate, endDate, prevStart, prevEnd, bucket)
 	if err != nil {
 		return render(etx, views.InternalError())
 	}
@@ -77,9 +80,10 @@ func (d Dashboard) Live(etx *echo.Context) error {
 	startParam := etx.QueryParam("start")
 	endParam := etx.QueryParam("end")
 	startDate, endDate := parseDateRange(period, startParam, endParam)
+	prevStart, prevEnd := previousPeriodRange(startDate, endDate)
 	bucket := chooseBucket(startDate, endDate)
 
-	stats, err := models.GetDashboardStats(ctx, d.db.Conn(), websiteID, startDate, endDate, bucket)
+	stats, err := models.GetDashboardStats(ctx, d.db.Conn(), websiteID, startDate, endDate, prevStart, prevEnd, bucket)
 	if err != nil {
 		return etx.NoContent(http.StatusInternalServerError)
 	}
@@ -124,12 +128,64 @@ func chooseBucket(start, end time.Time) string {
 	return "day"
 }
 
+func previousPeriodRange(start, end time.Time) (time.Time, time.Time) {
+	duration := end.Sub(start)
+	prevEnd := start.Add(-time.Second)
+	prevStart := prevEnd.Add(-duration)
+	return prevStart, prevEnd
+}
+
+func formatCompact(n int64) string {
+	abs := n
+	if abs < 0 {
+		abs = -abs
+	}
+	switch {
+	case abs >= 1_000_000:
+		v := float64(n) / 1_000_000
+		if math.Abs(v) >= 10 {
+			return fmt.Sprintf("%.0fM", v)
+		}
+		return fmt.Sprintf("%.1fM", v)
+	case abs >= 1_000:
+		v := float64(n) / 1_000
+		if math.Abs(v) >= 100 {
+			return fmt.Sprintf("%.0fk", v)
+		}
+		if math.Abs(v) >= 10 {
+			return fmt.Sprintf("%.1fk", v)
+		}
+		return fmt.Sprintf("%.1fk", v)
+	default:
+		return fmt.Sprintf("%d", n)
+	}
+}
+
+func formatRate(v float64) string {
+	if v == 0 {
+		return "0%"
+	}
+	return fmt.Sprintf("%.1f%%", v)
+}
+
+func formatFloat1(v float64) string {
+	if v == 0 {
+		return "0"
+	}
+	return fmt.Sprintf("%.1f", v)
+}
+
 func dashboardSignalsPayload(stats models.DashboardStats, bucket string) map[string]any {
 	return map[string]any{
 		"totals": map[string]any{
-			"totalPageviews":      stats.TotalPageviews,
-			"totalUniqueVisitors": stats.TotalUniqueVisitors,
-			"topPage":             topBreakdownName(stats.TopPages),
+			"visitors":          formatCompact(stats.TotalUniqueVisitors),
+			"visitorsChange":    math.Round(stats.UniqueVisitorsChange),
+			"pageviews":         formatCompact(stats.TotalPageviews),
+			"pageviewsChange":   math.Round(stats.PageviewsChange),
+			"viewsPerVisitor":   formatFloat1(stats.ViewsPerVisitor),
+			"vpvChange":         math.Round(stats.ViewsPerVisitorChange),
+			"bounceRate":        formatRate(stats.BounceRate),
+			"bounceRateChange":  math.Round(stats.BounceRateChange),
 		},
 		"series": map[string]any{
 			"pageviews": toSeriesPayload(stats.PageviewsOverTime, bucket),
@@ -138,13 +194,6 @@ func dashboardSignalsPayload(stats models.DashboardStats, bucket string) map[str
 		},
 		"lastUpdated": time.Now().UTC().Format("15:04:05 UTC"),
 	}
-}
-
-func topBreakdownName(items []models.BreakdownItem) string {
-	if len(items) == 0 {
-		return "-"
-	}
-	return items[0].Name
 }
 
 func toSeriesPayload(buckets []models.TimeBucket, bucketType string) map[string]any {
