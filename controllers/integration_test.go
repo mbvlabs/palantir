@@ -20,7 +20,7 @@ func TestMain(m *testing.M) {
 	if err := os.Chdir(".."); err != nil {
 		panic(err)
 	}
-	if err := inertia.Init(); err != nil {
+	if err := inertia.Init("inertia/root.go.html"); err != nil {
 		panic(err)
 	}
 	if err := os.Chdir(cwd); err != nil {

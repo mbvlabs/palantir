@@ -30,7 +30,7 @@ var appVersion string
 func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
-	if err := inertia.Init(); err != nil {
+	if err := inertia.Init("inertia/root.go.html"); err != nil {
 		fmt.Fprintf(os.Stderr, "failed to initialize inertia: %s\n", err)
 		os.Exit(1)
 	}
@@ -71,7 +71,10 @@ func main() {
 	}
 }
 
-func newEmailSenders(cfg config.Config, environment string) (email.TransactionalSender, email.MarketingSender) {
+func newEmailSenders(
+	cfg config.Config,
+	environment string,
+) (email.TransactionalSender, email.MarketingSender) {
 	if environment == server.ProdEnvironment {
 		sender := mailclients.NewAwsSes(cfg)
 		return sender, sender
@@ -125,7 +128,10 @@ func startServer(lc fx.Lifecycle, appCtx context.Context, r *router.Router, cfg 
 				var shutdownErr error
 				for _, shutdowner := range srv.Shutdowners {
 					if err := shutdowner.Shutdown(ctx); err != nil {
-						shutdownErr = errors.Join(shutdownErr, fmt.Errorf("server: shutdown component %T: %w", shutdowner, err))
+						shutdownErr = errors.Join(
+							shutdownErr,
+							fmt.Errorf("server: shutdown component %T: %w", shutdowner, err),
+						)
 					}
 				}
 				return shutdownErr

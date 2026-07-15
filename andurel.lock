@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "version": "v1.4.0",
+  "version": "v1.5.1",
   "extensions": {
     "aws-ses": {
       "appliedAt": "2026-07-15T18:16:54+02:00"
@@ -152,7 +152,6 @@
     "projectName": "palantir",
     "database": "postgresql",
     "inertia": "svelte",
-    "inertiaRoot": "views/inertia/root.go.html",
     "javascriptRuntime": "pnpm"
   },
   "databaseConfig": {
