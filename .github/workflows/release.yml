@@ -30,14 +30,14 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm exec vite build
 
-      - name: Build palatir
+      - name: Build palantir
         env:
           CGO_ENABLED: 0
           GOOS: linux
           GOARCH: amd64
-        run: go build -trimpath -ldflags "-s -w -X main.appVersion=${{ github.event.release.tag_name }}" -o palatir ./cmd/app
+        run: go build -trimpath -ldflags "-s -w -X main.appVersion=${{ github.event.release.tag_name }}" -o palantir ./cmd/app
 
       - name: Upload binary
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "${{ github.event.release.tag_name }}" palatir --clobber
+        run: gh release upload "${{ github.event.release.tag_name }}" palantir --clobber
