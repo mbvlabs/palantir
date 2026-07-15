@@ -1,15 +1,13 @@
 package cookies
 
 import (
-	"context"
 	"strings"
 	"time"
 
 	"palantir/config"
-	"palantir/internal/renderer"
 	"palantir/internal/server"
 
-	"github.com/labstack/echo-contrib/session"
+	"github.com/labstack/echo-contrib/v5/session"
 	"github.com/labstack/echo/v5"
 	"github.com/rs/xid"
 )
@@ -22,14 +20,14 @@ type FlashMessage struct {
 }
 
 var (
-	FlashKey = func() renderer.CookieKey {
+	flashSession = func() string {
 		if config.Env == server.ProdEnvironment {
-			return renderer.CookieKey(strings.ToLower(config.ProjectName) + "_" + "flash_key")
+			return strings.ToLower(config.ProjectName) + "_" + "flash_key"
 		}
 
-		return renderer.CookieKey(strings.ToLower(config.ProjectName) + "_" + "dev_flash_key")
+		return strings.ToLower(config.ProjectName) + "_" + "dev_flash_key"
 	}()
-	flashSession          = "flash_session"
+	flashSessionName = "flash_session"
 )
 
 type FlashType string
@@ -44,7 +42,7 @@ const (
 func AddFlash(
 	c *echo.Context, flashType FlashType, msg string,
 ) error {
-	sess, err := session.Get(string(FlashKey), c)
+	sess, err := session.Get(flashSession, c)
 	if err != nil {
 		return err
 	}
@@ -54,19 +52,19 @@ func AddFlash(
 		Type:      flashType,
 		CreatedAt: time.Now(),
 		Message:   msg,
-	}, flashSession)
+	}, flashSessionName)
 
 	return sess.Save(c.Request(), c.Response())
 }
 
-func GetFlashes(c *echo.Context) ([]FlashMessage, error) {
-	sess, err := session.Get(string(FlashKey), c)
+func ExtractFlashes(c *echo.Context) ([]FlashMessage, error) {
+	sess, err := session.Get(flashSession, c)
 	if err != nil {
 		return nil, err
 	}
 
 	var flashMessages []FlashMessage
-	for _, flash := range sess.Flashes(flashSession) {
+	for _, flash := range sess.Flashes(flashSessionName) {
 		if msg, ok := flash.(FlashMessage); ok {
 			flashMessages = append(flashMessages, msg)
 		}
@@ -77,13 +75,4 @@ func GetFlashes(c *echo.Context) ([]FlashMessage, error) {
 	}
 
 	return flashMessages, nil
-}
-
-func GetFlashesCtx(ctx context.Context) []FlashMessage {
-	value, ok := ctx.Value(FlashKey).([]FlashMessage)
-	if !ok {
-		return nil
-	}
-
-	return value
 }

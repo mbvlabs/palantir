@@ -2,10 +2,12 @@ package services
 
 import (
 	"context"
-	"database/sql"
+
 	"errors"
 
-	"palantir/internal/storage"
+	"fmt"
+
+	"palantir/internal/validation"
 	"palantir/models"
 )
 
@@ -19,33 +21,92 @@ type LoginData struct {
 	Password string
 }
 
-func AuthenticateUser(
+func (i Identity) AuthenticateUser(
 	ctx context.Context,
-	db storage.Pool,
-	salt string,
 	data LoginData,
-) (models.User, error) {
-	user, err := models.FindUserByEmail(ctx, db.Conn(), data.Email)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return models.User{}, ErrInvalidCredentials
-		}
-
-		return models.User{}, err
+) (models.UserEntity, error) {
+	b := validation.NewBuilder()
+	b.Required("email", data.Email)
+	b.Required("password", data.Password)
+	if !b.Errors().Empty() {
+		return models.UserEntity{}, b.Errors()
 	}
 
-	validPassword, err := user.ValidPassword(data.Password, salt)
+	user, err := models.User.FindByEmail(ctx, i.db.Executor(), data.Email)
+
 	if err != nil {
-		return models.User{}, err
+
+		if errors.Is(err, models.ErrNotFound) {
+			return models.UserEntity{}, ErrInvalidCredentials
+		}
+
+		return models.UserEntity{}, fmt.Errorf("find user by email: %w", err)
+
+	}
+
+	validPassword, needsRehash, err := verifyPasswordWithPeppers(
+		user,
+		data.Password,
+		i.pepper,
+		i.previousPeppers,
+	)
+
+	if err != nil {
+
+		return models.UserEntity{}, fmt.Errorf("validate password: %w", err)
+
 	}
 
 	if !validPassword {
-		return models.User{}, errors.New("invalid password")
+
+		return models.UserEntity{}, ErrInvalidCredentials
 	}
 
-	if user.EmailValidatedAt.IsZero() {
-		return models.User{}, ErrEmailNotVerified
+	if needsRehash {
+		hashedPassword, err := models.HashPassword(data.Password, i.pepper)
+		if err != nil {
+			return models.UserEntity{}, fmt.Errorf("rehash password with current pepper: %w", err)
+		}
+
+		user, err = models.User.Update(ctx, i.db.Executor(), models.UpdateUserData{
+			ID:               user.ID,
+			Email:            user.Email,
+			EmailValidatedAt: user.EmailValidatedAt,
+			Password:         []byte(hashedPassword),
+			IsAdmin:          user.IsAdmin,
+		})
+		if err != nil {
+			return models.UserEntity{}, fmt.Errorf("persist password rehash: %w", err)
+		}
+	}
+
+	if !user.HasValidatedEmail() {
+		return models.UserEntity{}, ErrEmailNotVerified
 	}
 
 	return user, nil
+}
+
+func verifyPasswordWithPeppers(
+	user models.UserEntity,
+	providedPassword string,
+	currentPepper string,
+	previousPeppers []string,
+) (valid bool, needsRehash bool, err error) {
+	valid, err = user.ValidPassword(providedPassword, currentPepper)
+	if err != nil || valid {
+		return valid, false, err
+	}
+
+	for _, previousPepper := range previousPeppers {
+		valid, err = user.ValidPassword(providedPassword, previousPepper)
+		if err != nil {
+			return false, false, err
+		}
+		if valid {
+			return true, true, nil
+		}
+	}
+
+	return false, false, nil
 }

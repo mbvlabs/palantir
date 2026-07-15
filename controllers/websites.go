@@ -2,184 +2,174 @@ package controllers
 
 import (
 	"errors"
-	"fmt"
+	"log/slog"
 	"net/http"
 
+	"palantir/config"
+	"palantir/internal/inertia"
 	"palantir/internal/storage"
+	"palantir/internal/validation"
 	"palantir/models"
+	"palantir/router"
 	"palantir/router/cookies"
+	"palantir/router/middleware"
 	"palantir/router/routes"
-	"palantir/views"
 
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v5"
 )
 
-type Websites struct {
-	db storage.Pool
-}
+type Websites struct{ db storage.Pool }
 
-func NewWebsites(db storage.Pool) Websites {
-	return Websites{db: db}
-}
+func NewWebsites(db storage.Pool) Websites { return Websites{db: db} }
 
-func (w Websites) Index(etx *echo.Context) error {
-	app := cookies.GetApp(etx)
-	ctx := etx.Request().Context()
-
-	websites, err := models.FindWebsitesByUserID(ctx, w.db.Conn(), app.UserID)
-	if err != nil {
-		return render(etx, views.InternalError())
+func (w Websites) RegisterRoutes(r *router.Router) error {
+	definitions := []echo.Route{
+		{Method: http.MethodGet, Path: routes.WebsiteIndex.Path(), Name: routes.WebsiteIndex.Name(), Handler: w.Index},
+		{Method: http.MethodGet, Path: routes.WebsiteNew.Path(), Name: routes.WebsiteNew.Name(), Handler: w.New},
+		{Method: http.MethodPost, Path: routes.WebsiteCreate.Path(), Name: routes.WebsiteCreate.Name(), Handler: w.Create},
+		{Method: http.MethodGet, Path: routes.WebsiteShow.Path(), Name: routes.WebsiteShow.Name(), Handler: w.Show},
+		{Method: http.MethodGet, Path: routes.WebsiteEdit.Path(), Name: routes.WebsiteEdit.Name(), Handler: w.Edit},
+		{Method: http.MethodPut, Path: routes.WebsiteUpdate.Path(), Name: routes.WebsiteUpdate.Name(), Handler: w.Update},
+		{Method: http.MethodDelete, Path: routes.WebsiteDestroy.Path(), Name: routes.WebsiteDestroy.Name(), Handler: w.Destroy},
 	}
-
-	return render(etx, views.WebsitesIndex(websites))
-}
-
-func (w Websites) New(etx *echo.Context) error {
-	return render(etx, views.WebsitesNew())
-}
-
-type createWebsitePayload struct {
-	Name   string `json:"name"`
-	Domain string `json:"domain"`
-}
-
-func (w Websites) Create(etx *echo.Context) error {
-	var payload createWebsitePayload
-	if err := etx.Bind(&payload); err != nil {
-		return render(etx, views.BadRequest())
-	}
-
-	app := cookies.GetApp(etx)
-	ctx := etx.Request().Context()
-
-	website, err := models.CreateWebsite(ctx, w.db.Conn(), models.CreateWebsiteData{
-		UserID: app.UserID,
-		Name:   payload.Name,
-		Domain: payload.Domain,
-	})
-	if err != nil {
-		if errors.Is(err, models.ErrDomainValidation) {
-			cookies.AddFlash(etx, cookies.FlashError, "Please provide a valid name and domain")
-			return etx.Redirect(http.StatusSeeOther, routes.WebsiteNew.URL())
+	var errs []error
+	for _, definition := range definitions {
+		definition.Middlewares = []echo.MiddlewareFunc{middleware.AuthOnly}
+		if _, err := r.AddRoute(definition); err != nil {
+			errs = append(errs, err)
 		}
-		return render(etx, views.InternalError())
 	}
-
-	cookies.AddFlash(etx, cookies.FlashSuccess, "Website added successfully")
-	return etx.Redirect(http.StatusSeeOther, routes.WebsiteShow.URL(website.ID))
+	return errors.Join(errs...)
 }
 
-func (w Websites) Show(etx *echo.Context) error {
-	websiteID, err := uuid.Parse(etx.Param("id"))
-	if err != nil {
-		return render(etx, views.BadRequest())
-	}
-
-	app := cookies.GetApp(etx)
-	ctx := etx.Request().Context()
-
-	website, err := models.FindWebsite(ctx, w.db.Conn(), websiteID)
-	if err != nil {
-		return render(etx, views.NotFound())
-	}
-
-	if website.UserID != app.UserID {
-		return render(etx, views.NotFound())
-	}
-
-	return render(etx, views.WebsitesShow(website))
+func (w Websites) Index(c *echo.Context) error {
+	return redirectToSelectedWebsite(c, w.db)
 }
 
-func (w Websites) Edit(etx *echo.Context) error {
-	websiteID, err := uuid.Parse(etx.Param("id"))
+func (w Websites) New(c *echo.Context) error {
+	websites, err := w.owned(c)
 	if err != nil {
-		return render(etx, views.BadRequest())
+		return internalError(c, err)
 	}
-
-	app := cookies.GetApp(etx)
-	ctx := etx.Request().Context()
-
-	website, err := models.FindWebsite(ctx, w.db.Conn(), websiteID)
-	if err != nil {
-		return render(etx, views.NotFound())
-	}
-
-	if website.UserID != app.UserID {
-		return render(etx, views.NotFound())
-	}
-
-	return render(etx, views.WebsitesEdit(website))
+	return inertia.Page(c, "Websites/New", inertia.Props{"websites": websites})
 }
 
-type updateWebsitePayload struct {
-	Name   string `json:"name"`
-	Domain string `json:"domain"`
-}
-
-func (w Websites) Update(etx *echo.Context) error {
-	websiteID, err := uuid.Parse(etx.Param("id"))
+func (w Websites) Create(c *echo.Context) error {
+	var payload struct{ Name, Domain string }
+	if err := c.Bind(&payload); err != nil {
+		return badRequest(c)
+	}
+	ownerID := cookies.ExtractFromCookieApp(c).UserID
+	website, err := models.Website.Create(c.Request().Context(), w.db.Executor(), models.CreateWebsiteData{UserID: ownerID, Name: payload.Name, Domain: payload.Domain})
 	if err != nil {
-		return render(etx, views.BadRequest())
-	}
-
-	app := cookies.GetApp(etx)
-	ctx := etx.Request().Context()
-
-	website, err := models.FindWebsite(ctx, w.db.Conn(), websiteID)
-	if err != nil {
-		return render(etx, views.NotFound())
-	}
-
-	if website.UserID != app.UserID {
-		return render(etx, views.NotFound())
-	}
-
-	var payload updateWebsitePayload
-	if err := etx.Bind(&payload); err != nil {
-		return render(etx, views.BadRequest())
-	}
-
-	_, err = models.UpdateWebsite(ctx, w.db.Conn(), models.UpdateWebsiteData{
-		ID:     websiteID,
-		Name:   payload.Name,
-		Domain: payload.Domain,
-	})
-	if err != nil {
-		if errors.Is(err, models.ErrDomainValidation) {
-			cookies.AddFlash(etx, cookies.FlashError, "Please provide a valid name and domain")
-			return etx.Redirect(http.StatusSeeOther, routes.WebsiteEdit.URL(websiteID))
+		if validationErrors, ok := validation.As(err); ok {
+			websites, listErr := w.owned(c)
+			if listErr != nil {
+				return internalError(c, listErr)
+			}
+			return inertia.Page(c, "Websites/New", inertia.Props{"websites": websites}, inertia.WithValidationErrors(validationErrors.ToMap()))
 		}
-		return render(etx, views.InternalError())
+		return internalError(c, err)
 	}
-
-	cookies.AddFlash(etx, cookies.FlashSuccess, "Website updated successfully")
-	return etx.Redirect(http.StatusSeeOther, routes.WebsiteShow.URL(websiteID))
+	if err := cookies.SetLastWebsite(c, website.ID); err != nil {
+		return internalError(c, err)
+	}
+	return inertia.Redirect(c, routes.WebsiteShow.URL(website.ID), http.StatusSeeOther)
 }
 
-func (w Websites) Destroy(etx *echo.Context) error {
-	websiteID, err := uuid.Parse(etx.Param("id"))
+func (w Websites) Show(c *echo.Context) error {
+	website, err := w.findOwned(c)
 	if err != nil {
-		return render(etx, views.BadRequest())
+		return websiteError(c, err)
 	}
-
-	app := cookies.GetApp(etx)
-	ctx := etx.Request().Context()
-
-	website, err := models.FindWebsite(ctx, w.db.Conn(), websiteID)
+	websites, err := w.owned(c)
 	if err != nil {
-		return render(etx, views.NotFound())
+		return internalError(c, err)
 	}
+	return inertia.Page(c, "Websites/Show", inertia.Props{"website": website, "websites": websites, "trackingScriptURL": config.BaseURL + routes.TrackingScript.URL()})
+}
 
-	if website.UserID != app.UserID {
-		return render(etx, views.NotFound())
+func (w Websites) Edit(c *echo.Context) error {
+	website, err := w.findOwned(c)
+	if err != nil {
+		return websiteError(c, err)
 	}
-
-	if err := models.DestroyWebsite(ctx, w.db.Conn(), websiteID); err != nil {
-		cookies.AddFlash(etx, cookies.FlashError, fmt.Sprintf("Failed to delete website: %v", err))
-		return etx.Redirect(http.StatusSeeOther, routes.WebsiteShow.URL(websiteID))
+	websites, err := w.owned(c)
+	if err != nil {
+		return internalError(c, err)
 	}
+	return inertia.Page(c, "Websites/Edit", inertia.Props{"website": website, "websites": websites})
+}
 
-	cookies.AddFlash(etx, cookies.FlashSuccess, "Website deleted successfully")
-	return etx.Redirect(http.StatusSeeOther, routes.WebsiteIndex.URL())
+func (w Websites) Update(c *echo.Context) error {
+	websiteID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		return notFound(c)
+	}
+	var payload struct{ Name, Domain string }
+	if err := c.Bind(&payload); err != nil {
+		return badRequest(c)
+	}
+	ownerID := cookies.ExtractFromCookieApp(c).UserID
+	website, err := models.Website.UpdateOwned(c.Request().Context(), w.db.Executor(), ownerID, models.UpdateWebsiteData{ID: websiteID, Name: payload.Name, Domain: payload.Domain})
+	if err != nil {
+		if validationErrors, ok := validation.As(err); ok {
+			websites, listErr := w.owned(c)
+			if listErr != nil {
+				return internalError(c, listErr)
+			}
+			current, findErr := models.Website.FindOwned(c.Request().Context(), w.db.Executor(), websiteID, ownerID)
+			if findErr != nil {
+				return websiteError(c, findErr)
+			}
+			return inertia.Page(c, "Websites/Edit", inertia.Props{"website": current, "websites": websites}, inertia.WithValidationErrors(validationErrors.ToMap()))
+		}
+		return websiteError(c, err)
+	}
+	return inertia.Redirect(c, routes.WebsiteShow.URL(website.ID), http.StatusSeeOther)
+}
+
+func (w Websites) Destroy(c *echo.Context) error {
+	websiteID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		return notFound(c)
+	}
+	ownerID := cookies.ExtractFromCookieApp(c).UserID
+	if err := models.Website.DestroyOwned(c.Request().Context(), w.db.Executor(), websiteID, ownerID); err != nil {
+		return websiteError(c, err)
+	}
+	return inertia.Redirect(c, routes.WebsiteIndex.URL(), http.StatusSeeOther)
+}
+
+func (w Websites) findOwned(c *echo.Context) (models.WebsiteEntity, error) {
+	websiteID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		return models.WebsiteEntity{}, models.ErrNotFound
+	}
+	return models.Website.FindOwned(c.Request().Context(), w.db.Executor(), websiteID, cookies.ExtractFromCookieApp(c).UserID)
+}
+
+func (w Websites) owned(c *echo.Context) ([]models.WebsiteEntity, error) {
+	return models.Website.AllOwned(c.Request().Context(), w.db.Executor(), cookies.ExtractFromCookieApp(c).UserID)
+}
+
+func websiteError(c *echo.Context, err error) error {
+	if errors.Is(err, models.ErrNotFound) {
+		return notFound(c)
+	}
+	return internalError(c, err)
+}
+
+func notFound(c *echo.Context) error {
+	return echo.NewHTTPError(http.StatusNotFound, http.StatusText(http.StatusNotFound))
+}
+
+func badRequest(c *echo.Context) error {
+	return echo.NewHTTPError(http.StatusBadRequest, http.StatusText(http.StatusBadRequest))
+}
+
+func internalError(c *echo.Context, err error) error {
+	slog.ErrorContext(c.Request().Context(), "request failed", "error", err)
+	return echo.NewHTTPError(http.StatusInternalServerError, http.StatusText(http.StatusInternalServerError))
 }

@@ -4,6 +4,8 @@ package factories
 import (
 	"os"
 
+	"palantir/models"
+
 	"github.com/go-faker/faker/v4"
 )
 
@@ -14,8 +16,17 @@ var TestPepper = func() string {
 		return os.Getenv("PEPPER")
 	}
 
-	return "1e2b79a0f441ecab7a96a932"
+	return "b25492890c4bff56a5271b47"
 }()
+
+// defaultPassword generates a default password hash for testing
+func defaultPassword() []byte {
+	hash, err := models.HashPassword("password123", TestPepper)
+	if err != nil {
+		return []byte("3tqjNE7qwBqPvqEGqLxPrMzKFH9YkRJPqQXqN3yVzNE:AAAAAAAAAAAAAAAAAAAAAA")
+	}
+	return []byte(hash)
+}
 
 // randomInt wraps faker.RandomInt and returns a default value if there's an error
 func randomInt(min, max int, defaultValue int32) int32 {

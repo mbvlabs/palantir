@@ -3,21 +3,31 @@ package queue
 
 import (
 	"context"
+	"database/sql"
 	"log/slog"
 
 	"palantir/internal/storage"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/riverqueue/river"
-	"github.com/riverqueue/river/riverdriver/riverpgxv5"
+	"github.com/riverqueue/river/riverdriver/riverdatabasesql"
 	"github.com/riverqueue/river/rivertype"
+
+	"go.uber.org/fx"
 )
 
 type Processor struct {
-	Client *river.Client[pgx.Tx]
+	Client *river.Client[*sql.Tx]
 }
 
-var _ storage.Queue = (*Processor)(nil)
+const periodicJobsGroup = `group:"periodic_jobs"`
+
+type ProcessorParams struct {
+	fx.In
+
+	DB           storage.Pool
+	Workers      *river.Workers
+	PeriodicJobs []*river.PeriodicJob `group:"periodic_jobs"`
+}
 
 func (p Processor) Shutdown(ctx context.Context) error {
 	return p.Client.Stop(ctx)
@@ -31,17 +41,14 @@ func (p Processor) Stop(ctx context.Context) error {
 	return p.Client.Stop(ctx)
 }
 
-func NewProcessor(
-	ctx context.Context,
-	db storage.Pool,
-	workers *river.Workers,
-) (Processor, error) {
-	riverClient, err := river.NewClient(riverpgxv5.New(db.Conn()), &river.Config{
+func NewProcessor(params ProcessorParams) (Processor, error) {
+	riverClient, err := river.NewClient(riverdatabasesql.New(params.DB.Conn()), &river.Config{
+		PeriodicJobs: params.PeriodicJobs,
 		Queues: map[string]river.QueueConfig{
 			river.QueueDefault: {MaxWorkers: 100},
 		},
 		Logger:  slog.Default(),
-		Workers: workers,
+		Workers: params.Workers,
 	})
 	if err != nil {
 		return Processor{}, err
@@ -51,7 +58,7 @@ func NewProcessor(
 }
 
 type InsertOnly struct {
-	client *river.Client[pgx.Tx]
+	client *river.Client[*sql.Tx]
 }
 
 // Insert implements storage.InsertQueue.
@@ -82,7 +89,7 @@ func (i *InsertOnly) InsertManyFast(
 // InsertManyFastTx implements storage.InsertQueue.
 func (i *InsertOnly) InsertManyFastTx(
 	ctx context.Context,
-	tx pgx.Tx,
+	tx *sql.Tx,
 	params []river.InsertManyParams,
 ) (int, error) {
 	return i.client.InsertManyFastTx(ctx, tx, params)
@@ -91,7 +98,7 @@ func (i *InsertOnly) InsertManyFastTx(
 // InsertManyTx implements storage.InsertQueue.
 func (i *InsertOnly) InsertManyTx(
 	ctx context.Context,
-	tx pgx.Tx,
+	tx *sql.Tx,
 	params []river.InsertManyParams,
 ) ([]*rivertype.JobInsertResult, error) {
 	return i.client.InsertManyTx(ctx, tx, params)
@@ -100,7 +107,7 @@ func (i *InsertOnly) InsertManyTx(
 // InsertTx implements storage.InsertQueue.
 func (i *InsertOnly) InsertTx(
 	ctx context.Context,
-	tx pgx.Tx,
+	tx *sql.Tx,
 	args river.JobArgs,
 	opts *river.InsertOpts,
 ) (*rivertype.JobInsertResult, error) {
@@ -110,7 +117,7 @@ func (i *InsertOnly) InsertTx(
 var _ storage.InsertQueue = (*InsertOnly)(nil)
 
 func NewInsertOnly(db storage.Pool, workers *river.Workers) (InsertOnly, error) {
-	riverClient, err := river.NewClient(riverpgxv5.New(db.Conn()), &river.Config{
+	riverClient, err := river.NewClient(riverdatabasesql.New(db.Conn()), &river.Config{
 		Workers: workers,
 	})
 	if err != nil {
@@ -119,3 +126,11 @@ func NewInsertOnly(db storage.Pool, workers *river.Workers) (InsertOnly, error) 
 
 	return InsertOnly{riverClient}, nil
 }
+
+var Module = fx.Module(
+	"queue",
+	fx.Provide(
+		NewInsertOnly,
+		NewProcessor,
+	),
+)

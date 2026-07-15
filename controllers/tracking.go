@@ -3,31 +3,32 @@ package controllers
 import (
 	"net/http"
 
+	"palantir/router"
+	"palantir/router/routes"
+
 	"github.com/labstack/echo/v5"
 )
 
 type Tracking struct{}
 
-func NewTracking() Tracking {
-	return Tracking{}
+func NewTracking() Tracking { return Tracking{} }
+
+func (t Tracking) RegisterRoutes(r *router.Router) error {
+	_, err := r.AddRoute(echo.Route{Method: http.MethodGet, Path: routes.TrackingScript.Path(), Name: routes.TrackingScript.Name(), Handler: t.Script})
+	return err
 }
 
 const trackingScript = `(function(){
-  var d=document,s=d.currentScript,id=s.dataset.websiteId;
-  var ep=new URL('/api/collect',s.src).href;
-  function send(t,extra){
-    var data={website_id:id,type:t,url:location.pathname+location.search,referrer:document.referrer,screen_width:window.innerWidth,language:navigator.language};
-    if(extra){for(var k in extra){data[k]=extra[k]}}
-    try{navigator.sendBeacon(ep,new Blob([JSON.stringify(data)],{type:'application/json'}))}catch(e){
-      var x=new XMLHttpRequest();x.open('POST',ep);x.setRequestHeader('Content-Type','application/json');x.send(JSON.stringify(data));
-    }
-  }
-  send('pageview');
-  window.palantir={track:function(n,d){send('event',{event_name:n,event_data:d})}};
+var d=document,s=d.currentScript,id=s&&s.dataset.websiteId;if(!id)return;
+var ep=new URL('/api/collect',s.src).href;
+function send(type,extra){var data={website_id:id,type:type,url:location.pathname+location.search,referrer:d.referrer,screen_width:innerWidth,language:navigator.language};
+if(extra)Object.assign(data,extra);var body=JSON.stringify(data);
+if(navigator.sendBeacon&&navigator.sendBeacon(ep,new Blob([body],{type:'application/json'})))return;
+fetch(ep,{method:'POST',headers:{'Content-Type':'application/json'},body:body,keepalive:true}).catch(function(){});}
+send('pageview');window.palantir={track:function(name,data){send('event',{event_name:name,event_data:data})}};
 })();`
 
-func (t Tracking) Script(etx *echo.Context) error {
-	etx.Response().Header().Set("Content-Type", "application/javascript")
-	etx.Response().Header().Set("Cache-Control", "public, max-age=86400")
-	return etx.String(http.StatusOK, trackingScript)
+func (Tracking) Script(c *echo.Context) error {
+	c.Response().Header().Set("Cache-Control", "public, max-age=86400")
+	return c.Blob(http.StatusOK, "application/javascript; charset=utf-8", []byte(trackingScript))
 }

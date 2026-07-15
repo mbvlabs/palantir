@@ -3,77 +3,71 @@ package database
 
 import (
 	"context"
+	"database/sql"
 	"embed"
-	"errors"
+	"fmt"
 	"log/slog"
 
+	"palantir/config"
 	"palantir/internal/storage"
 
 	"github.com/exaring/otelpgx"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5/stdlib"
+	"github.com/uptrace/bun"
+	"github.com/uptrace/bun/dialect/pgdialect"
+
+	"go.uber.org/fx"
 )
 
 //go:embed migrations/*
 var Migrations embed.FS
 
 type Postgres struct {
-	pool *pgxpool.Pool
+	conn *bun.DB
 }
 
 var _ storage.Pool = (*Postgres)(nil)
 
-func NewPostgres(ctx context.Context, databaseURL string) (*Postgres, error) {
-	pgxCfg, err := pgxpool.ParseConfig(databaseURL)
+func NewPostgres(ctx context.Context, cfg config.Config) (*Postgres, error) {
+	pgxCfg, err := pgx.ParseConfig(cfg.DB.GetDatabaseURL())
 	if err != nil {
 		slog.ErrorContext(ctx, "could not parse database connection string", "error", err)
-		return &Postgres{}, err
+		return nil, fmt.Errorf("database: parse database URL: %w", err)
 	}
 
-	pgxCfg.ConnConfig.Tracer = otelpgx.NewTracer()
+	pgxCfg.Tracer = otelpgx.NewTracer()
 
-	pool, err := pgxpool.NewWithConfig(ctx, pgxCfg)
-	if err != nil {
-		slog.ErrorContext(ctx, "could not establish connection to database", "error", err)
-		return &Postgres{}, err
-	}
+	sqldb := stdlib.OpenDB(*pgxCfg)
+	db := bun.NewDB(sqldb, pgdialect.New())
 
-	if err := pool.Ping(ctx); err != nil {
+	if err := db.PingContext(ctx); err != nil {
 		slog.ErrorContext(ctx, "could not ping database", "error", err)
-		return &Postgres{}, err
+		db.Close()
+		return nil, fmt.Errorf("database: ping database: %w", err)
 	}
 
-	return &Postgres{pool}, nil
+	return &Postgres{conn: db}, nil
 }
 
-func (p *Postgres) Conn() *pgxpool.Pool {
-	return p.pool
+func (p *Postgres) Executor() *bun.DB {
+	return p.conn
 }
 
-func (p *Postgres) BeginTx(ctx context.Context) (pgx.Tx, error) {
-	tx, err := p.pool.Begin(ctx)
+func (p *Postgres) Conn() *sql.DB {
+	return p.conn.DB
+}
+
+func (p *Postgres) BeginTx(ctx context.Context, opts *sql.TxOptions) (bun.Tx, error) {
+	tx, err := p.conn.BeginTx(ctx, opts)
 	if err != nil {
-		slog.ErrorContext(ctx, "could not begin transaction", "reason", err)
-		return nil, errors.Join(storage.ErrBeginTx, err)
+		return bun.Tx{}, fmt.Errorf("database: begin transaction: %w", err)
 	}
-
 	return tx, nil
 }
 
-func (p *Postgres) RollBackTx(ctx context.Context, tx pgx.Tx) error {
-	if err := tx.Rollback(ctx); err != nil {
-		slog.ErrorContext(ctx, "could not rollback transaction", "reason", err)
-		return errors.Join(storage.ErrRollbackTx, err)
-	}
-
-	return nil
+func (p *Postgres) Close() error {
+	return p.conn.Close()
 }
 
-func (p *Postgres) CommitTx(ctx context.Context, tx pgx.Tx) error {
-	if err := tx.Commit(ctx); err != nil {
-		slog.ErrorContext(ctx, "could not commit transaction", "reason", err)
-		return errors.Join(storage.ErrCommitTx, err)
-	}
-
-	return nil
-}
+var Module = fx.Module("database", fx.Provide(fx.Annotate(NewPostgres, fx.As(new(storage.Pool)))))

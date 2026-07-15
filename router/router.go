@@ -3,19 +3,27 @@ package router
 
 import (
 	"encoding/gob"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"log/slog"
 	"net/http"
+	"strings"
 
 	"palantir/config"
+	"palantir/internal/inertia"
+	"palantir/internal/server"
 	"palantir/router/cookies"
 	"palantir/router/middleware"
 	"palantir/telemetry"
 
 	"github.com/google/uuid"
 	"github.com/gorilla/sessions"
-	"github.com/labstack/echo-contrib/session"
+	"github.com/labstack/echo-contrib/v5/session"
 	"github.com/labstack/echo/v5"
 	echomw "github.com/labstack/echo/v5/middleware"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"go.uber.org/fx"
 )
 
 type Router struct {
@@ -24,20 +32,54 @@ type Router struct {
 }
 
 func New(
-	enableHTTPInstrumentation bool,
-	globalMiddleware []echo.MiddlewareFunc,
+	cfg config.Config,
+	tel *telemetry.Telemetry,
 ) (*Router, error) {
 	gob.Register(uuid.UUID{})
 	gob.Register(cookies.FlashMessage{})
 
+	authKey, err := hex.DecodeString(cfg.App.SessionKey)
+	if err != nil {
+		return nil, err
+	}
+	encKey, err := hex.DecodeString(cfg.App.SessionEncryptionKey)
+	if err != nil {
+		return nil, err
+	}
+
 	router := echo.New()
+	defaultHTTPErrorHandler := echo.DefaultHTTPErrorHandler(false)
+	router.HTTPErrorHandler = func(c *echo.Context, err error) {
+		if panicErr, ok := errors.AsType[*echomw.PanicStackError](err); ok {
+			slog.ErrorContext(
+				c.Request().Context(),
+				"http panic recovered",
+				"method", c.Request().Method,
+				"path", c.Request().URL.Path,
+				"error", panicErr.Unwrap(),
+				"stack", string(panicErr.Stack),
+			)
+		} else {
+			slog.ErrorContext(
+				c.Request().Context(),
+				"http handler error",
+				"method", c.Request().Method,
+				"path", c.Request().URL.Path,
+				"error", err,
+			)
+		}
+
+		defaultHTTPErrorHandler(c, err)
+	}
+
+	globalMiddleware, err := SetupGlobalMiddleware(cfg, tel, authKey, encKey, "_csrf")
+	if err != nil {
+		return nil, err
+	}
 
 	router.Use(globalMiddleware...)
 
-	handler := http.Handler(router)
-	if enableHTTPInstrumentation {
-		handler = otelhttp.NewHandler(router, "http")
-	}
+	handler := otelhttp.NewHandler(router, "http")
 
 	return &Router{
 		e:       router,
@@ -50,10 +92,22 @@ func SetupGlobalMiddleware(
 	tel *telemetry.Telemetry,
 	authKey []byte,
 	encKey []byte,
-	mw middleware.Middleware,
 	csrfName string,
 ) ([]echo.MiddlewareFunc, error) {
-	csrfMiddleware, err := mw.CSRFMiddleware(cfg, csrfName)
+	csrfMiddleware, err := middleware.CSRFMiddleware(cfg, csrfName)
+	if err != nil {
+		return nil, err
+	}
+	sessionStore, err := newApplicationSessionStore(
+		authKey,
+		encKey,
+		cfg.App.SessionMaxAge,
+		config.Env == server.ProdEnvironment,
+	)
+	if err != nil {
+		return nil, err
+	}
+	corsConfig, err := newCORSConfig(config.BaseURL, cfg.App.CORSAllowedOrigins)
 	if err != nil {
 		return nil, err
 	}
@@ -61,30 +115,13 @@ func SetupGlobalMiddleware(
 	// Order matters: middlewares execute in the order listed, with Recover last
 	// to catch panics from all preceding middlewares.
 	middlewares := []echo.MiddlewareFunc{
-		mw.TraceRouteAttributes(tel),
-		mw.Logger(tel),
-		session.Middleware(
-			sessions.NewCookieStore(
-				authKey,
-				encKey,
-			),
-		),
-		mw.ValidateSession,
-		mw.RegisterAppContext,
-		mw.RegisterFlashMessagesContext,
-		mw.TrackReturnTo,
-		echomw.CORSWithConfig(echomw.CORSConfig{
-			UnsafeAllowOriginFunc: func(_ *echo.Context, origin string) (allowedOrigin string, allowed bool, err error) {
-				if origin == "" {
-					return "", false, nil
-				}
-				return origin, true, nil
-			},
-			AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"},
-			AllowHeaders:     []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token"},
-			AllowCredentials: true,
-			MaxAge:           300,
-		}),
+		middleware.TraceRouteAttributes(tel),
+		middleware.Logger(tel),
+		session.Middleware(sessionStore),
+		middleware.ValidateSession,
+		middleware.RegisterRequestMeta,
+		inertia.Middleware(),
+		echomw.CORSWithConfig(corsConfig),
 		csrfMiddleware,
 		echomw.Recover(),
 	}
@@ -92,10 +129,69 @@ func SetupGlobalMiddleware(
 	return middlewares, nil
 }
 
-func (r *Router) RegisterCustomRoutes(
-	riverHandler interface{ ServeHTTP(http.ResponseWriter, *http.Request) },
-	notFoundHandler echo.HandlerFunc,
-) {
-	r.e.Any("/riverui*", echo.WrapHandler(riverHandler))
-	r.e.RouteNotFound("/*", notFoundHandler)
+func newApplicationSessionStore(
+	authKey []byte,
+	encKey []byte,
+	maxAge int,
+	secure bool,
+) (*sessions.CookieStore, error) {
+	if maxAge <= 0 {
+		return nil, errors.New("SESSION_MAX_AGE must be greater than zero")
+	}
+
+	store := sessions.NewCookieStore(authKey, encKey)
+	store.Options = &sessions.Options{
+		Path:     "/",
+		MaxAge:   maxAge,
+		HttpOnly: true,
+		Secure:   secure,
+		SameSite: http.SameSiteLaxMode,
+	}
+
+	return store, nil
 }
+
+func newCORSConfig(applicationOrigin string, additionalOrigins []string) (echomw.CORSConfig, error) {
+	applicationOrigin = strings.TrimSpace(applicationOrigin)
+	if applicationOrigin == "" {
+		return echomw.CORSConfig{}, errors.New("application origin must not be empty")
+	}
+	if strings.Contains(applicationOrigin, "*") {
+		return echomw.CORSConfig{}, fmt.Errorf("credentialed CORS origin %q must not contain a wildcard", applicationOrigin)
+	}
+
+	origins := []string{applicationOrigin}
+	for _, configuredOrigin := range additionalOrigins {
+		origin := strings.TrimSpace(configuredOrigin)
+		if origin == "" {
+			continue
+		}
+		if strings.Contains(origin, "*") {
+			return echomw.CORSConfig{}, fmt.Errorf("credentialed CORS origin %q must not contain a wildcard", origin)
+		}
+		origins = append(origins, origin)
+	}
+
+	return echomw.CORSConfig{
+		AllowOrigins:     origins,
+		AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"},
+		AllowHeaders:     []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token"},
+		AllowCredentials: true,
+		MaxAge:           300,
+	}, nil
+}
+
+func (r *Router) AddRoute(route echo.Route) (echo.RouteInfo, error) {
+	return r.e.AddRoute(route)
+}
+
+func (r *Router) AddRouteNotFound(
+	notFoundHandler echo.HandlerFunc,
+) echo.RouteInfo {
+	return r.e.RouteNotFound("/*", notFoundHandler)
+}
+
+var Module = fx.Module(
+	"router",
+	fx.Provide(New),
+)

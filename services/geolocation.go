@@ -2,8 +2,9 @@ package services
 
 import (
 	"encoding/json"
-	"fmt"
+	"net"
 	"net/http"
+	"net/url"
 	"time"
 )
 
@@ -22,39 +23,30 @@ type IPAPIGeoResolver struct {
 	client *http.Client
 }
 
-func NewIPAPIGeoResolver() *IPAPIGeoResolver {
-	return &IPAPIGeoResolver{
-		client: &http.Client{Timeout: 2 * time.Second},
-	}
-}
-
-type ipAPIResponse struct {
-	CountryCode string `json:"countryCode"`
-	Country     string `json:"country"`
-	City        string `json:"city"`
-	RegionName  string `json:"regionName"`
+func NewIPAPIGeoResolver() GeoResolver {
+	return &IPAPIGeoResolver{client: &http.Client{Timeout: 2 * time.Second}}
 }
 
 func (r *IPAPIGeoResolver) Resolve(ip string) (GeoResult, error) {
-	resp, err := r.client.Get(fmt.Sprintf("http://ip-api.com/json/%s?fields=countryCode,country,city,regionName", ip))
+	if net.ParseIP(ip) == nil {
+		return GeoResult{}, nil
+	}
+	response, err := r.client.Get("http://ip-api.com/json/" + url.PathEscape(ip) + "?fields=countryCode,country,city,regionName")
 	if err != nil {
 		return GeoResult{}, nil
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
 		return GeoResult{}, nil
 	}
-
-	var data ipAPIResponse
-	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+	var payload struct {
+		CountryCode string `json:"countryCode"`
+		Country     string `json:"country"`
+		City        string `json:"city"`
+		Region      string `json:"regionName"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
 		return GeoResult{}, nil
 	}
-
-	return GeoResult{
-		CountryCode: data.CountryCode,
-		CountryName: data.Country,
-		City:        data.City,
-		Region:      data.RegionName,
-	}, nil
+	return GeoResult{CountryCode: payload.CountryCode, CountryName: payload.Country, City: payload.City, Region: payload.Region}, nil
 }

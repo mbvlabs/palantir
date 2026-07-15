@@ -3,18 +3,21 @@ package controllers
 import (
 	"crypto/md5"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"path"
+	"strings"
 
 	"palantir/assets"
 	"palantir/config"
 	"palantir/internal/routing"
 	"palantir/internal/server"
+	"palantir/router"
 	"palantir/router/routes"
 
 	"github.com/labstack/echo/v5"
-	"gopkg.in/yaml.v2"
 )
 
 const threeMonthsCache = "7776000"
@@ -25,6 +28,70 @@ type Assets struct {
 
 func NewAssets(cache *Cache[string]) Assets {
 	return Assets{cache}
+}
+
+func (a Assets) RegisterRoutes(r *router.Router) error {
+	errs := []error{}
+
+	_, err := r.AddRoute(echo.Route{
+		Method:  http.MethodGet,
+		Path:    routes.Robots.Path(),
+		Name:    routes.Robots.Name(),
+		Handler: a.Robots,
+	})
+	if err != nil {
+		errs = append(errs, err)
+	}
+
+	_, err = r.AddRoute(echo.Route{
+		Method:  http.MethodGet,
+		Path:    routes.Sitemap.Path(),
+		Name:    routes.Sitemap.Name(),
+		Handler: a.Sitemap,
+	})
+	if err != nil {
+		errs = append(errs, err)
+	}
+
+	_, err = r.AddRoute(echo.Route{
+		Method:  http.MethodGet,
+		Path:    routes.Stylesheet.Path(),
+		Name:    routes.Stylesheet.Name(),
+		Handler: a.Stylesheet,
+	})
+	if err != nil {
+		errs = append(errs, err)
+	}
+
+	_, err = r.AddRoute(echo.Route{
+		Method:  http.MethodGet,
+		Path:    routes.Scripts.Path(),
+		Name:    routes.Scripts.Name(),
+		Handler: a.Scripts,
+	})
+	if err != nil {
+		errs = append(errs, err)
+	}
+
+	_, err = r.AddRoute(echo.Route{
+		Method:  http.MethodGet,
+		Path:    routes.Script.Path(),
+		Name:    routes.Script.Name(),
+		Handler: a.Script,
+	})
+	if err != nil {
+		errs = append(errs, err)
+	}
+	_, err = r.AddRoute(echo.Route{
+		Method:  http.MethodGet,
+		Path:    routes.ViteBuild.Path(),
+		Name:    routes.ViteBuild.Name(),
+		Handler: a.ViteBuild,
+	})
+	if err != nil {
+		errs = append(errs, err)
+	}
+	return errors.Join(errs...)
 }
 
 func (a Assets) enableCaching(etx *echo.Context, content []byte) *echo.Context {
@@ -58,35 +125,19 @@ func (a Assets) enableCaching(etx *echo.Context, content []byte) *echo.Context {
 	return etx
 }
 
-func createRobotsTxt() (string, error) {
-	type robotsTxt struct {
-		UserAgent string `yaml:"User-agent"`
-		Allow     string `yaml:"Allow"`
-		Sitemap   string `yaml:"Sitemap"`
-	}
-
-	robots, err := yaml.Marshal(robotsTxt{
-		UserAgent: "*",
-		Allow:     "/",
-		Sitemap: fmt.Sprintf(
-			"%s%s",
-			config.BaseURL,
-			routes.Sitemap.URL(),
-		),
-	})
-	if err != nil {
-		return "", err
-	}
-
-	return string(robots), nil
+func createRobotsTxt() string {
+	return fmt.Sprintf(
+		"User-agent: *\nAllow: /\nSitemap: %s%s\n",
+		config.BaseURL,
+		routes.Sitemap.URL(),
+	)
 }
-
 
 func (a Assets) Robots(etx *echo.Context) error {
 	cacheKey := "assets:robots"
 
 	robotsTxt, err := a.cache.Get(cacheKey, func() (string, error) {
-		return createRobotsTxt()
+		return createRobotsTxt(), nil
 	})
 	if err != nil {
 		slog.ErrorContext(
@@ -94,8 +145,7 @@ func (a Assets) Robots(etx *echo.Context) error {
 			"failed to get robots.txt from cache",
 			"error", err,
 		)
-		result, _ := createRobotsTxt()
-		return etx.String(http.StatusOK, result)
+		return etx.String(http.StatusOK, createRobotsTxt())
 	}
 
 	return etx.String(http.StatusOK, robotsTxt)
@@ -157,11 +207,11 @@ func createSitemap(routes []routing.Route) (string, error) {
 	}
 
 	xmlBytes, err := xml.MarshalIndent(sitemap, "", "  ")
-    if err != nil {
-    	return "", err
-    }
+	if err != nil {
+		return "", err
+	}
 
-    return xml.Header + string(xmlBytes), nil
+	return xml.Header + string(xmlBytes), nil
 }
 
 func (a Assets) Stylesheet(etx *echo.Context) error {
@@ -199,4 +249,34 @@ func (a Assets) Script(etx *echo.Context) error {
 
 	etx = a.enableCaching(etx, stylesheet)
 	return etx.Blob(http.StatusOK, "application/javascript", stylesheet)
+}
+func contentTypeByExt(name string) string {
+	switch {
+	case strings.HasSuffix(name, ".js"):
+		return "application/javascript"
+	case strings.HasSuffix(name, ".css"):
+		return "text/css"
+	case strings.HasSuffix(name, ".json"):
+		return "application/json"
+	case strings.HasSuffix(name, ".svg"):
+		return "image/svg+xml"
+	default:
+		return "application/octet-stream"
+	}
+}
+
+func (a Assets) ViteBuild(etx *echo.Context) error {
+	param := strings.TrimPrefix(etx.Param("*"), "/")
+	param = path.Clean(param)
+	if param == "." || param == "" || strings.HasPrefix(param, "../") {
+		return echo.NewHTTPError(http.StatusNotFound, http.StatusText(http.StatusNotFound))
+	}
+
+	data, err := assets.Files.ReadFile(fmt.Sprintf("dist/%s", param))
+	if err != nil {
+		return echo.NewHTTPError(http.StatusNotFound, http.StatusText(http.StatusNotFound))
+	}
+
+	etx = a.enableCaching(etx, data)
+	return etx.Blob(http.StatusOK, contentTypeByExt(param), data)
 }

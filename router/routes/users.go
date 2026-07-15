@@ -7,19 +7,19 @@ import (
 const UserPrefix = "/users"
 
 var SessionNew = routing.NewSimpleRoute(
-	"/sign_in",
+	"/sign-in",
 	"users.new_user_session",
 	UserPrefix,
 )
 
 var SessionCreate = routing.NewSimpleRoute(
-	"/sign_in",
+	"/sign-in",
 	"users.user_session",
 	UserPrefix,
 )
 
 var SessionDestroy = routing.NewSimpleRoute(
-	"/sign_out",
+	"/sign-out",
 	"users.destroy_user_session",
 	UserPrefix,
 )
@@ -45,29 +45,5 @@ var PasswordEdit = routing.NewRouteWithToken(
 var PasswordUpdate = routing.NewSimpleRoute(
 	"/password",
 	"users.user_password",
-	UserPrefix,
-)
-
-var RegistrationNew = routing.NewSimpleRoute(
-	"/sign_up",
-	"users.new_user_registration",
-	UserPrefix,
-)
-
-var RegistrationCreate = routing.NewSimpleRoute(
-	"",
-	"users.user_registration",
-	UserPrefix,
-)
-
-var ConfirmationNew = routing.NewSimpleRoute(
-	"/confirmation/new",
-	"users.new_user_confirmation",
-	UserPrefix,
-)
-
-var ConfirmationCreate = routing.NewSimpleRoute(
-	"/confirmation",
-	"users.user_confirmation",
 	UserPrefix,
 )

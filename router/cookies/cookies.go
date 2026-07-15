@@ -1,33 +1,33 @@
 package cookies
 
 import (
-	"context"
 	"strings"
 
-	"palantir/config"
-	"palantir/internal/renderer"
 	"github.com/google/uuid"
+	"palantir/config"
 	"palantir/models"
 
-	"github.com/labstack/echo-contrib/session"
+	"github.com/labstack/echo-contrib/v5/session"
 	"github.com/labstack/echo/v5"
 )
 
-var AppKey renderer.CookieKey = "app_cookie_context"
 const ReturnToKey = "return_to"
 
 const (
 	isAuthenticated = "is_authenticated"
-	isAdmin = "is_admin"
-	userID = "user_id"
+	isAdmin         = "is_admin"
+	userID          = "user_id"
+	lastWebsiteID   = "last_website_id"
 )
 
 type App struct {
-	UserID uuid.UUID
-	IsAdmin bool
+	CurrentPath     string
+	UserID          uuid.UUID
+	IsAdmin         bool
 	IsAuthenticated bool
 }
-func CreateAppSession(c *echo.Context, user models.User) error {
+
+func CreateAppSession(c *echo.Context, user models.UserEntity) error {
 	sess, err := session.Get(config.AppCookieSessionName, c)
 	if err != nil {
 		return err
@@ -40,6 +40,28 @@ func CreateAppSession(c *echo.Context, user models.User) error {
 	return sess.Save(c.Request(), c.Response())
 }
 
+func SetLastWebsite(c *echo.Context, websiteID uuid.UUID) error {
+	sess, err := session.Get(config.AppCookieSessionName, c)
+	if err != nil {
+		return err
+	}
+	if sess.Values[lastWebsiteID] == websiteID.String() {
+		return nil
+	}
+	sess.Values[lastWebsiteID] = websiteID.String()
+	return sess.Save(c.Request(), c.Response())
+}
+
+func GetLastWebsite(c *echo.Context) uuid.UUID {
+	sess, err := session.Get(config.AppCookieSessionName, c)
+	if err != nil {
+		return uuid.Nil
+	}
+	value, _ := sess.Values[lastWebsiteID].(string)
+	id, _ := uuid.Parse(value)
+	return id
+}
+
 func DestroyAppSession(c *echo.Context) error {
 	sess, err := session.Get(config.AppCookieSessionName, c)
 	if err != nil {
@@ -50,16 +72,7 @@ func DestroyAppSession(c *echo.Context) error {
 	return sess.Save(c.Request(), c.Response())
 }
 
-func GetAppCtx(ctx context.Context) App {
-	appCtx, ok := ctx.Value(AppKey).(App)
-	if !ok {
-		return App{}
-	}
-
-	return appCtx
-}
-
-func GetApp(c *echo.Context) App {
+func ExtractFromCookieApp(c *echo.Context) App {
 	sess, err := session.Get(config.AppCookieSessionName, c)
 	if err != nil {
 		return App{}

@@ -2,79 +2,80 @@ package models
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"time"
 
-	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgtype"
-
 	"palantir/internal/storage"
-	"palantir/models/internal/db"
+
+	"github.com/google/uuid"
+	"github.com/uptrace/bun"
 )
 
-type Event struct {
-	ID          uuid.UUID
-	CreatedAt   time.Time
-	WebsiteID   uuid.UUID
-	URL         string
-	EventName   string
-	EventData   json.RawMessage
-	VisitorHash string
-	CountryCode string
-	CountryName string
-	City        string
-	Region      string
+type EventEntity struct {
+	bun.BaseModel `bun:"table:events,alias:event"`
+	ID            uuid.UUID       `bun:"id,pk,type:uuid"`
+	CreatedAt     time.Time       `bun:"created_at"`
+	WebsiteID     uuid.UUID       `bun:"website_id,type:uuid"`
+	Url           string          `bun:"url"`
+	EventName     string          `bun:"event_name"`
+	EventData     json.RawMessage `bun:"event_data,type:jsonb"`
+	VisitorHash   sql.NullString  `bun:"visitor_hash"`
+	CountryCode   sql.NullString  `bun:"country_code"`
+	CountryName   sql.NullString  `bun:"country_name"`
+	City          sql.NullString  `bun:"city"`
+	Region        sql.NullString  `bun:"region"`
 }
 
 type CreateEventData struct {
-	WebsiteID   uuid.UUID
-	URL         string
-	EventName   string
-	EventData   json.RawMessage
-	VisitorHash string
-	CountryCode string
-	CountryName string
-	City        string
-	Region      string
+	WebsiteID                                           uuid.UUID
+	URL, EventName                                      string
+	EventData                                           json.RawMessage
+	VisitorHash, CountryCode, CountryName, City, Region string
 }
 
-func CreateEvent(
-	ctx context.Context,
-	exec storage.Executor,
-	data CreateEventData,
-) (Event, error) {
-	params := db.InsertEventParams{
-		ID:          uuid.New(),
-		WebsiteID:   data.WebsiteID,
-		Url:         data.URL,
-		EventName:   data.EventName,
-		EventData:   data.EventData,
-		VisitorHash: pgtype.Text{String: data.VisitorHash, Valid: data.VisitorHash != ""},
-		CountryCode: pgtype.Text{String: data.CountryCode, Valid: data.CountryCode != ""},
-		CountryName: pgtype.Text{String: data.CountryName, Valid: data.CountryName != ""},
-		City:        pgtype.Text{String: data.City, Valid: data.City != ""},
-		Region:      pgtype.Text{String: data.Region, Valid: data.Region != ""},
+func (event) Create(ctx context.Context, db storage.Executor, data CreateEventData) (EventEntity, error) {
+	entity := EventEntity{
+		ID: uuid.New(), CreatedAt: time.Now().UTC(), WebsiteID: data.WebsiteID,
+		Url: data.URL, EventName: data.EventName, EventData: data.EventData,
+		VisitorHash: nullString(data.VisitorHash), CountryCode: nullString(data.CountryCode),
+		CountryName: nullString(data.CountryName), City: nullString(data.City), Region: nullString(data.Region),
 	}
-	row, err := queries.InsertEvent(ctx, exec, params)
+	if len(entity.EventData) == 0 {
+		entity.EventData = json.RawMessage(`{}`)
+	}
+	if _, err := db.NewInsert().Model(&entity).Exec(ctx); err != nil {
+		return EventEntity{}, err
+	}
+	return entity, nil
+}
+
+func (event) top(ctx context.Context, db storage.Executor, websiteID uuid.UUID, start, end time.Time) ([]BreakdownItem, error) {
+	items := make([]BreakdownItem, 0)
+	err := db.NewSelect().TableExpr("events AS event").
+		ColumnExpr("event.event_name AS name, count(*) AS views").
+		Where("event.website_id = ?", websiteID).
+		Where("event.created_at BETWEEN ? AND ?", start, end).
+		GroupExpr("event.event_name").OrderExpr("views DESC").Limit(10).Scan(ctx, &items)
+	return items, err
+}
+
+func (event) overTime(ctx context.Context, db storage.Executor, websiteID uuid.UUID, start, end time.Time, bucket string) ([]TimeBucket, error) {
+	var rows []struct {
+		Time  time.Time `bun:"bucket_time"`
+		Count int64     `bun:"count"`
+	}
+	err := db.NewSelect().TableExpr("events AS event").
+		ColumnExpr("date_trunc(?, event.created_at) AS bucket_time, count(*) AS count", bucket).
+		Where("event.website_id = ?", websiteID).
+		Where("event.created_at BETWEEN ? AND ?", start, end).
+		GroupExpr("bucket_time").OrderExpr("bucket_time").Scan(ctx, &rows)
 	if err != nil {
-		return Event{}, err
+		return nil, err
 	}
-
-	return rowToEvent(row), nil
-}
-
-func rowToEvent(row db.Event) Event {
-	return Event{
-		ID:          row.ID,
-		CreatedAt:   row.CreatedAt.Time,
-		WebsiteID:   row.WebsiteID,
-		URL:         row.Url,
-		EventName:   row.EventName,
-		EventData:   row.EventData,
-		VisitorHash: row.VisitorHash.String,
-		CountryCode: row.CountryCode.String,
-		CountryName: row.CountryName.String,
-		City:        row.City.String,
-		Region:      row.Region.String,
+	items := make([]TimeBucket, len(rows))
+	for i, row := range rows {
+		items[i] = TimeBucket{Time: row.Time, Count: row.Count}
 	}
+	return fillTimeBuckets(items, start, end, bucket), nil
 }

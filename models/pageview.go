@@ -2,472 +2,278 @@ package models
 
 import (
 	"context"
+	"database/sql"
 	"time"
 
-	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgtype"
-
 	"palantir/internal/storage"
-	"palantir/models/internal/db"
+
+	"github.com/google/uuid"
+	"github.com/uptrace/bun"
 )
 
-type Pageview struct {
-	ID          uuid.UUID
-	CreatedAt   time.Time
-	WebsiteID   uuid.UUID
-	URL         string
-	Referrer    string
-	Browser     string
-	OS          string
-	Device      string
-	Country     string
-	Language    string
-	ScreenWidth int32
-	VisitorHash string
-	CountryCode string
-	CountryName string
-	City        string
-	Region      string
+type PageviewEntity struct {
+	bun.BaseModel `bun:"table:pageviews,alias:pageview"`
+	ID            uuid.UUID      `bun:"id,pk,type:uuid"`
+	CreatedAt     time.Time      `bun:"created_at"`
+	WebsiteID     uuid.UUID      `bun:"website_id,type:uuid"`
+	Url           string         `bun:"url"`
+	Referrer      sql.NullString `bun:"referrer"`
+	Browser       sql.NullString `bun:"browser"`
+	Os            sql.NullString `bun:"os"`
+	Device        sql.NullString `bun:"device"`
+	Country       sql.NullString `bun:"country"`
+	Language      sql.NullString `bun:"language"`
+	ScreenWidth   sql.NullInt32  `bun:"screen_width"`
+	VisitorHash   sql.NullString `bun:"visitor_hash"`
+	CountryCode   sql.NullString `bun:"country_code"`
+	CountryName   sql.NullString `bun:"country_name"`
+	City          sql.NullString `bun:"city"`
+	Region        sql.NullString `bun:"region"`
 }
 
 type CreatePageviewData struct {
-	WebsiteID   uuid.UUID
-	URL         string
-	Referrer    string
-	Browser     string
-	OS          string
-	Device      string
-	Country     string
-	Language    string
-	ScreenWidth int32
-	VisitorHash string
-	CountryCode string
-	CountryName string
-	City        string
-	Region      string
+	WebsiteID                                             uuid.UUID
+	URL, Referrer, Browser, OS, Device, Country, Language string
+	ScreenWidth                                           int32
+	VisitorHash, CountryCode, CountryName, City, Region   string
 }
 
-func CreatePageview(
-	ctx context.Context,
-	exec storage.Executor,
-	data CreatePageviewData,
-) (Pageview, error) {
-	params := db.InsertPageviewParams{
-		ID:          uuid.New(),
-		WebsiteID:   data.WebsiteID,
-		Url:         data.URL,
-		Referrer:    pgtype.Text{String: data.Referrer, Valid: data.Referrer != ""},
-		Browser:     pgtype.Text{String: data.Browser, Valid: data.Browser != ""},
-		Os:          pgtype.Text{String: data.OS, Valid: data.OS != ""},
-		Device:      pgtype.Text{String: data.Device, Valid: data.Device != ""},
-		Country:     pgtype.Text{String: data.Country, Valid: data.Country != ""},
-		Language:    pgtype.Text{String: data.Language, Valid: data.Language != ""},
-		ScreenWidth: pgtype.Int4{Int32: data.ScreenWidth, Valid: data.ScreenWidth > 0},
-		VisitorHash: pgtype.Text{String: data.VisitorHash, Valid: data.VisitorHash != ""},
-		CountryCode: pgtype.Text{String: data.CountryCode, Valid: data.CountryCode != ""},
-		CountryName: pgtype.Text{String: data.CountryName, Valid: data.CountryName != ""},
-		City:        pgtype.Text{String: data.City, Valid: data.City != ""},
-		Region:      pgtype.Text{String: data.Region, Valid: data.Region != ""},
+func (pageview) Create(ctx context.Context, db storage.Executor, data CreatePageviewData) (PageviewEntity, error) {
+	entity := PageviewEntity{
+		ID: uuid.New(), CreatedAt: time.Now().UTC(), WebsiteID: data.WebsiteID, Url: data.URL,
+		Referrer: nullString(data.Referrer), Browser: nullString(data.Browser), Os: nullString(data.OS),
+		Device: nullString(data.Device), Country: nullString(data.Country), Language: nullString(data.Language),
+		ScreenWidth: sql.NullInt32{Int32: data.ScreenWidth, Valid: data.ScreenWidth > 0},
+		VisitorHash: nullString(data.VisitorHash), CountryCode: nullString(data.CountryCode),
+		CountryName: nullString(data.CountryName), City: nullString(data.City), Region: nullString(data.Region),
 	}
-	row, err := queries.InsertPageview(ctx, exec, params)
-	if err != nil {
-		return Pageview{}, err
+	if _, err := db.NewInsert().Model(&entity).Exec(ctx); err != nil {
+		return PageviewEntity{}, err
 	}
-
-	return rowToPageview(row), nil
+	return entity, nil
 }
 
-type PageviewsPerDay struct {
-	Date  time.Time
-	Views int64
+func nullString(value string) sql.NullString {
+	return sql.NullString{String: value, Valid: value != ""}
 }
 
 type TimeBucket struct {
-	Time  time.Time
-	Count int64
+	Time  time.Time `json:"time"`
+	Count int64     `json:"count"`
 }
 
 type BreakdownItem struct {
-	Name  string
-	Views int64
+	Name  string `json:"name" bun:"name"`
+	Views int64  `json:"views" bun:"views"`
 }
 
 type GeoBreakdownItem struct {
-	Name  string
-	Code  string
-	Views int64
+	Name  string `json:"name" bun:"name"`
+	Code  string `json:"code" bun:"code"`
+	Views int64  `json:"views" bun:"views"`
 }
 
 type DashboardStats struct {
-	TotalPageviews      int64
-	TotalUniqueVisitors int64
-	BounceCount         int64
-	ViewsPerVisitor     float64
-	BounceRate          float64
-
-	// Percentage changes vs previous period
-	PageviewsChange      float64
-	UniqueVisitorsChange float64
-	ViewsPerVisitorChange float64
-	BounceRateChange     float64
-
-	PageviewsOverTime []TimeBucket
-	VisitorsOverTime  []TimeBucket
-	TopPages          []BreakdownItem
-	TopReferrers      []BreakdownItem
-	Browsers          []BreakdownItem
-	OSes              []BreakdownItem
-	Devices           []BreakdownItem
-	TopCountries      []GeoBreakdownItem
-	TopCities         []GeoBreakdownItem
-	TopEvents         []BreakdownItem
-	EventsOverTime    []TimeBucket
+	TotalPageviews, TotalUniqueVisitors, BounceCount                               int64
+	ViewsPerVisitor, BounceRate                                                    float64
+	PageviewsChange, UniqueVisitorsChange, ViewsPerVisitorChange, BounceRateChange float64
+	PageviewsOverTime, VisitorsOverTime, EventsOverTime                            []TimeBucket
+	TopPages, TopReferrers, Browsers, OSes, Devices, TopEvents                     []BreakdownItem
+	TopCountries, TopCities                                                        []GeoBreakdownItem
 }
 
-func GetDashboardStats(
-	ctx context.Context,
-	exec storage.Executor,
-	websiteID uuid.UUID,
-	startDate time.Time,
-	endDate time.Time,
-	prevStartDate time.Time,
-	prevEndDate time.Time,
-	bucket string,
-) (DashboardStats, error) {
-	dateParams := func() (pgtype.Timestamptz, pgtype.Timestamptz) {
-		return pgtype.Timestamptz{Time: startDate, Valid: true},
-			pgtype.Timestamptz{Time: endDate, Valid: true}
+func DashboardStatsFor(ctx context.Context, db storage.Executor, websiteID uuid.UUID, start, end, previousStart, previousEnd time.Time, bucket string) (DashboardStats, error) {
+	if bucket != "hour" {
+		bucket = "day"
 	}
-	start, end := dateParams()
-
-	prevStart := pgtype.Timestamptz{Time: prevStartDate, Valid: true}
-	prevEnd := pgtype.Timestamptz{Time: prevEndDate, Valid: true}
-
-	total, err := queries.QueryTotalPageviews(ctx, exec, db.QueryTotalPageviewsParams{
-		WebsiteID: websiteID,
-		StartDate: start,
-		EndDate:   end,
-	})
+	total, unique, bounce, err := pageviewTotals(ctx, db, websiteID, start, end)
+	if err != nil {
+		return DashboardStats{}, err
+	}
+	previousTotal, previousUnique, previousBounce, err := pageviewTotals(ctx, db, websiteID, previousStart, previousEnd)
+	if err != nil {
+		return DashboardStats{}, err
+	}
+	pageviews, err := pageviewTimeBuckets(ctx, db, websiteID, start, end, bucket, false)
+	if err != nil {
+		return DashboardStats{}, err
+	}
+	visitors, err := pageviewTimeBuckets(ctx, db, websiteID, start, end, bucket, true)
+	if err != nil {
+		return DashboardStats{}, err
+	}
+	topPages, err := pageviewBreakdown(ctx, db, websiteID, start, end, "url", false, 10)
+	if err != nil {
+		return DashboardStats{}, err
+	}
+	topReferrers, err := pageviewBreakdown(ctx, db, websiteID, start, end, "referrer", true, 10)
+	if err != nil {
+		return DashboardStats{}, err
+	}
+	browsers, err := pageviewBreakdown(ctx, db, websiteID, start, end, "browser", false, 0)
+	if err != nil {
+		return DashboardStats{}, err
+	}
+	oses, err := pageviewBreakdown(ctx, db, websiteID, start, end, "os", false, 0)
+	if err != nil {
+		return DashboardStats{}, err
+	}
+	devices, err := pageviewBreakdown(ctx, db, websiteID, start, end, "device", false, 0)
+	if err != nil {
+		return DashboardStats{}, err
+	}
+	countries, err := geoBreakdown(ctx, db, websiteID, start, end, true)
+	if err != nil {
+		return DashboardStats{}, err
+	}
+	cities, err := geoBreakdown(ctx, db, websiteID, start, end, false)
+	if err != nil {
+		return DashboardStats{}, err
+	}
+	topEvents, err := Event.top(ctx, db, websiteID, start, end)
+	if err != nil {
+		return DashboardStats{}, err
+	}
+	events, err := Event.overTime(ctx, db, websiteID, start, end, bucket)
 	if err != nil {
 		return DashboardStats{}, err
 	}
 
-	totalUnique, err := queries.QueryTotalUniqueVisitors(ctx, exec, db.QueryTotalUniqueVisitorsParams{
-		WebsiteID: websiteID,
-		StartDate: start,
-		EndDate:   end,
-	})
-	if err != nil {
-		return DashboardStats{}, err
-	}
-
-	bounceCount, err := queries.QueryBounceCount(ctx, exec, db.QueryBounceCountParams{
-		WebsiteID: websiteID,
-		StartDate: start,
-		EndDate:   end,
-	})
-	if err != nil {
-		return DashboardStats{}, err
-	}
-
-	// Previous period totals
-	prevTotal, err := queries.QueryTotalPageviews(ctx, exec, db.QueryTotalPageviewsParams{
-		WebsiteID: websiteID,
-		StartDate: prevStart,
-		EndDate:   prevEnd,
-	})
-	if err != nil {
-		return DashboardStats{}, err
-	}
-
-	prevUnique, err := queries.QueryTotalUniqueVisitors(ctx, exec, db.QueryTotalUniqueVisitorsParams{
-		WebsiteID: websiteID,
-		StartDate: prevStart,
-		EndDate:   prevEnd,
-	})
-	if err != nil {
-		return DashboardStats{}, err
-	}
-
-	prevBounce, err := queries.QueryBounceCount(ctx, exec, db.QueryBounceCountParams{
-		WebsiteID: websiteID,
-		StartDate: prevStart,
-		EndDate:   prevEnd,
-	})
-	if err != nil {
-		return DashboardStats{}, err
-	}
-
-	// Compute derived metrics
-	viewsPerVisitor := computeRatio(total, totalUnique)
-	prevViewsPerVisitor := computeRatio(prevTotal, prevUnique)
-	bounceRate := computeRatio(bounceCount*100, totalUnique)
-	prevBounceRate := computeRatio(prevBounce*100, prevUnique)
-
-	pvBucketRows, err := queries.QueryPageviewsTimeBucketed(ctx, exec, db.QueryPageviewsTimeBucketedParams{
-		WebsiteID: websiteID,
-		Bucket:    bucket,
-		StartDate: start,
-		EndDate:   end,
-	})
-	if err != nil {
-		return DashboardStats{}, err
-	}
-
-	pvSparse := make([]TimeBucket, len(pvBucketRows))
-	for i, row := range pvBucketRows {
-		pvSparse[i] = TimeBucket{Time: row.BucketTime.Time, Count: row.Views}
-	}
-	pvOverTime := fillTimeBuckets(pvSparse, startDate, endDate, bucket)
-
-	uvBucketRows, err := queries.QueryUniqueVisitorsTimeBucketed(ctx, exec, db.QueryUniqueVisitorsTimeBucketedParams{
-		WebsiteID: websiteID,
-		Bucket:    bucket,
-		StartDate: start,
-		EndDate:   end,
-	})
-	if err != nil {
-		return DashboardStats{}, err
-	}
-
-	uvSparse := make([]TimeBucket, len(uvBucketRows))
-	for i, row := range uvBucketRows {
-		uvSparse[i] = TimeBucket{Time: row.BucketTime.Time, Count: row.Visitors}
-	}
-	uvOverTime := fillTimeBuckets(uvSparse, startDate, endDate, bucket)
-
-	topPagesRows, err := queries.QueryTopPages(ctx, exec, db.QueryTopPagesParams{
-		WebsiteID: websiteID,
-		StartDate: start,
-		EndDate:   end,
-	})
-	if err != nil {
-		return DashboardStats{}, err
-	}
-
-	topPages := make([]BreakdownItem, len(topPagesRows))
-	for i, row := range topPagesRows {
-		topPages[i] = BreakdownItem{Name: row.Url, Views: row.Views}
-	}
-
-	topRefRows, err := queries.QueryTopReferrers(ctx, exec, db.QueryTopReferrersParams{
-		WebsiteID: websiteID,
-		StartDate: start,
-		EndDate:   end,
-	})
-	if err != nil {
-		return DashboardStats{}, err
-	}
-
-	topReferrers := make([]BreakdownItem, len(topRefRows))
-	for i, row := range topRefRows {
-		topReferrers[i] = BreakdownItem{Name: row.Referrer.String, Views: row.Views}
-	}
-
-	browserRows, err := queries.QueryBrowserBreakdown(ctx, exec, db.QueryBrowserBreakdownParams{
-		WebsiteID: websiteID,
-		StartDate: start,
-		EndDate:   end,
-	})
-	if err != nil {
-		return DashboardStats{}, err
-	}
-
-	browsers := make([]BreakdownItem, len(browserRows))
-	for i, row := range browserRows {
-		browsers[i] = BreakdownItem{Name: row.Browser.String, Views: row.Views}
-	}
-
-	osRows, err := queries.QueryOSBreakdown(ctx, exec, db.QueryOSBreakdownParams{
-		WebsiteID: websiteID,
-		StartDate: start,
-		EndDate:   end,
-	})
-	if err != nil {
-		return DashboardStats{}, err
-	}
-
-	oses := make([]BreakdownItem, len(osRows))
-	for i, row := range osRows {
-		oses[i] = BreakdownItem{Name: row.Os.String, Views: row.Views}
-	}
-
-	deviceRows, err := queries.QueryDeviceBreakdown(ctx, exec, db.QueryDeviceBreakdownParams{
-		WebsiteID: websiteID,
-		StartDate: start,
-		EndDate:   end,
-	})
-	if err != nil {
-		return DashboardStats{}, err
-	}
-
-	devices := make([]BreakdownItem, len(deviceRows))
-	for i, row := range deviceRows {
-		devices[i] = BreakdownItem{Name: row.Device.String, Views: row.Views}
-	}
-
-	countryRows, err := queries.QueryTopCountries(ctx, exec, db.QueryTopCountriesParams{
-		WebsiteID: websiteID,
-		StartDate: start,
-		EndDate:   end,
-	})
-	if err != nil {
-		return DashboardStats{}, err
-	}
-
-	countries := make([]GeoBreakdownItem, len(countryRows))
-	for i, row := range countryRows {
-		countries[i] = GeoBreakdownItem{Name: row.CountryName.String, Code: row.CountryCode.String, Views: row.Views}
-	}
-
-	cityRows, err := queries.QueryTopCities(ctx, exec, db.QueryTopCitiesParams{
-		WebsiteID: websiteID,
-		StartDate: start,
-		EndDate:   end,
-	})
-	if err != nil {
-		return DashboardStats{}, err
-	}
-
-	cities := make([]GeoBreakdownItem, len(cityRows))
-	for i, row := range cityRows {
-		cities[i] = GeoBreakdownItem{Name: row.City.String, Code: row.CountryCode.String, Views: row.Views}
-	}
-
-	topEventRows, err := queries.QueryTopEvents(ctx, exec, db.QueryTopEventsParams{
-		WebsiteID: websiteID,
-		StartDate: start,
-		EndDate:   end,
-	})
-	if err != nil {
-		return DashboardStats{}, err
-	}
-
-	topEvents := make([]BreakdownItem, len(topEventRows))
-	for i, row := range topEventRows {
-		topEvents[i] = BreakdownItem{Name: row.EventName, Views: row.EventCount}
-	}
-
-	eventBucketRows, err := queries.QueryEventsTimeBucketed(ctx, exec, db.QueryEventsTimeBucketedParams{
-		WebsiteID: websiteID,
-		Bucket:    bucket,
-		StartDate: start,
-		EndDate:   end,
-	})
-	if err != nil {
-		return DashboardStats{}, err
-	}
-
-	eventsSparse := make([]TimeBucket, len(eventBucketRows))
-	for i, row := range eventBucketRows {
-		eventsSparse[i] = TimeBucket{Time: row.BucketTime.Time, Count: row.EventCount}
-	}
-	eventsOverTime := fillTimeBuckets(eventsSparse, startDate, endDate, bucket)
-
+	viewsPerVisitor := ratio(total, unique)
+	previousViewsPerVisitor := ratio(previousTotal, previousUnique)
+	bounceRate := ratio(bounce*100, unique)
+	previousBounceRate := ratio(previousBounce*100, previousUnique)
 	return DashboardStats{
-		TotalPageviews:        total,
-		TotalUniqueVisitors:   totalUnique,
-		BounceCount:           bounceCount,
-		ViewsPerVisitor:       viewsPerVisitor,
-		BounceRate:            bounceRate,
-		PageviewsChange:       percentChange(prevTotal, total),
-		UniqueVisitorsChange:  percentChange(prevUnique, totalUnique),
-		ViewsPerVisitorChange: percentChangeFloat(prevViewsPerVisitor, viewsPerVisitor),
-		BounceRateChange:      -percentChangeFloat(prevBounceRate, bounceRate), // negate: decrease is good
-		PageviewsOverTime:     pvOverTime,
-		VisitorsOverTime:      uvOverTime,
-		TopPages:              topPages,
-		TopReferrers:          topReferrers,
-		Browsers:              browsers,
-		OSes:                  oses,
-		Devices:               devices,
-		TopCountries:          countries,
-		TopCities:             cities,
-		TopEvents:             topEvents,
-		EventsOverTime:        eventsOverTime,
+		TotalPageviews: total, TotalUniqueVisitors: unique, BounceCount: bounce,
+		ViewsPerVisitor: viewsPerVisitor, BounceRate: bounceRate,
+		PageviewsChange:       percentChange(float64(previousTotal), float64(total)),
+		UniqueVisitorsChange:  percentChange(float64(previousUnique), float64(unique)),
+		ViewsPerVisitorChange: percentChange(previousViewsPerVisitor, viewsPerVisitor),
+		BounceRateChange:      -percentChange(previousBounceRate, bounceRate),
+		PageviewsOverTime:     pageviews, VisitorsOverTime: visitors, EventsOverTime: events,
+		TopPages: topPages, TopReferrers: topReferrers, Browsers: browsers, OSes: oses,
+		Devices: devices, TopCountries: countries, TopCities: cities, TopEvents: topEvents,
 	}, nil
 }
 
-// fillTimeBuckets generates a complete time series from startDate to endDate
-// with the given bucket granularity, filling in zeros for missing buckets.
-func fillTimeBuckets(sparse []TimeBucket, startDate, endDate time.Time, bucket string) []TimeBucket {
-	// Build a lookup of existing data keyed by truncated time
+func pageviewTotals(ctx context.Context, db storage.Executor, websiteID uuid.UUID, start, end time.Time) (int64, int64, int64, error) {
+	base := func() *bun.SelectQuery {
+		return db.NewSelect().TableExpr("pageviews AS pageview").
+			Where("pageview.website_id = ?", websiteID).
+			Where("pageview.created_at BETWEEN ? AND ?", start, end)
+	}
+	var total, unique, bounce int64
+	if err := base().ColumnExpr("count(*)").Scan(ctx, &total); err != nil {
+		return 0, 0, 0, err
+	}
+	if err := base().ColumnExpr("count(DISTINCT pageview.visitor_hash)").Where("pageview.visitor_hash IS NOT NULL").Scan(ctx, &unique); err != nil {
+		return 0, 0, 0, err
+	}
+	subquery := base().ColumnExpr("pageview.visitor_hash").Where("pageview.visitor_hash IS NOT NULL").GroupExpr("pageview.visitor_hash").Having("count(*) = 1")
+	if err := db.NewSelect().TableExpr("(?) AS bounce_visitors", subquery).ColumnExpr("count(*)").Scan(ctx, &bounce); err != nil {
+		return 0, 0, 0, err
+	}
+	return total, unique, bounce, nil
+}
+
+func pageviewTimeBuckets(ctx context.Context, db storage.Executor, websiteID uuid.UUID, start, end time.Time, bucket string, unique bool) ([]TimeBucket, error) {
+	count := "count(*)"
+	if unique {
+		count = "count(DISTINCT pageview.visitor_hash)"
+	}
+	var rows []struct {
+		Time  time.Time `bun:"bucket_time"`
+		Count int64     `bun:"count"`
+	}
+	err := db.NewSelect().TableExpr("pageviews AS pageview").
+		ColumnExpr("date_trunc(?, pageview.created_at) AS bucket_time", bucket).
+		ColumnExpr(count+" AS count").
+		Where("pageview.website_id = ?", websiteID).
+		Where("pageview.created_at BETWEEN ? AND ?", start, end).
+		GroupExpr("bucket_time").OrderExpr("bucket_time").Scan(ctx, &rows)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]TimeBucket, len(rows))
+	for i, row := range rows {
+		items[i] = TimeBucket{Time: row.Time, Count: row.Count}
+	}
+	return fillTimeBuckets(items, start, end, bucket), nil
+}
+
+func pageviewBreakdown(ctx context.Context, db storage.Executor, websiteID uuid.UUID, start, end time.Time, column string, nonEmpty bool, limit int) ([]BreakdownItem, error) {
+	query := db.NewSelect().TableExpr("pageviews AS pageview").
+		ColumnExpr("COALESCE(?, 'Unknown') AS name, count(*) AS views", bun.Ident("pageview."+column)).
+		Where("pageview.website_id = ?", websiteID).
+		Where("pageview.created_at BETWEEN ? AND ?", start, end).
+		GroupExpr("?", bun.Ident("pageview."+column)).OrderExpr("views DESC")
+	if nonEmpty {
+		query = query.Where("? IS NOT NULL AND ? != ''", bun.Ident("pageview."+column), bun.Ident("pageview."+column))
+	}
+	if limit > 0 {
+		query = query.Limit(limit)
+	}
+	items := make([]BreakdownItem, 0)
+	if err := query.Scan(ctx, &items); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+func geoBreakdown(ctx context.Context, db storage.Executor, websiteID uuid.UUID, start, end time.Time, countries bool) ([]GeoBreakdownItem, error) {
+	name := "city"
+	if countries {
+		name = "country_name"
+	}
+	items := make([]GeoBreakdownItem, 0)
+	err := db.NewSelect().TableExpr("pageviews AS pageview").
+		ColumnExpr("? AS name, pageview.country_code AS code, count(*) AS views", bun.Ident("pageview."+name)).
+		Where("pageview.website_id = ?", websiteID).
+		Where("pageview.created_at BETWEEN ? AND ?", start, end).
+		Where("? IS NOT NULL AND ? != ''", bun.Ident("pageview."+name), bun.Ident("pageview."+name)).
+		GroupExpr("?, pageview.country_code", bun.Ident("pageview."+name)).
+		OrderExpr("views DESC").Limit(10).Scan(ctx, &items)
+	return items, err
+}
+
+func fillTimeBuckets(sparse []TimeBucket, start, end time.Time, bucket string) []TimeBucket {
 	existing := make(map[int64]int64, len(sparse))
-	for _, tb := range sparse {
-		existing[tb.Time.Unix()] = tb.Count
+	for _, item := range sparse {
+		existing[item.Time.Unix()] = item.Count
 	}
-
-	// Truncate start to bucket boundary
-	start := truncateToBucket(startDate, bucket)
-	end := endDate
-
-	var step time.Duration
-	if bucket == "hour" {
-		step = time.Hour
-	} else {
-		step = 24 * time.Hour
-	}
-
-	var result []TimeBucket
-	for t := start; !t.After(end); t = t.Add(step) {
-		count := existing[t.Unix()]
-		result = append(result, TimeBucket{Time: t, Count: count})
-	}
-
-	return result
-}
-
-func truncateToBucket(t time.Time, bucket string) time.Time {
-	if bucket == "hour" {
-		return time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), 0, 0, 0, t.Location())
-	}
-	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location())
-}
-
-func percentChange(prev, current int64) float64 {
-	if prev == 0 {
-		if current == 0 {
-			return 0
+	cursor := truncateBucket(start, bucket)
+	items := make([]TimeBucket, 0)
+	for !cursor.After(end) {
+		items = append(items, TimeBucket{Time: cursor, Count: existing[cursor.Unix()]})
+		if bucket == "hour" {
+			cursor = cursor.Add(time.Hour)
+		} else {
+			cursor = cursor.AddDate(0, 0, 1)
 		}
-		return 100
 	}
-	return (float64(current) - float64(prev)) / float64(prev) * 100
+	return items
 }
 
-func percentChangeFloat(prev, current float64) float64 {
-	if prev == 0 {
-		if current == 0 {
-			return 0
-		}
-		return 100
+func truncateBucket(value time.Time, bucket string) time.Time {
+	if bucket == "hour" {
+		return value.Truncate(time.Hour)
 	}
-	return (current - prev) / prev * 100
+	return time.Date(value.Year(), value.Month(), value.Day(), 0, 0, 0, 0, value.Location())
 }
 
-func computeRatio(numerator, denominator int64) float64 {
+func ratio(numerator, denominator int64) float64 {
 	if denominator == 0 {
 		return 0
 	}
 	return float64(numerator) / float64(denominator)
 }
 
-func rowToPageview(row db.Pageview) Pageview {
-	return Pageview{
-		ID:          row.ID,
-		CreatedAt:   row.CreatedAt.Time,
-		WebsiteID:   row.WebsiteID,
-		URL:         row.Url,
-		Referrer:    row.Referrer.String,
-		Browser:     row.Browser.String,
-		OS:          row.Os.String,
-		Device:      row.Device.String,
-		Country:     row.Country.String,
-		Language:    row.Language.String,
-		ScreenWidth: row.ScreenWidth.Int32,
-		VisitorHash: row.VisitorHash.String,
-		CountryCode: row.CountryCode.String,
-		CountryName: row.CountryName.String,
-		City:        row.City.String,
-		Region:      row.Region.String,
+func percentChange(previous, current float64) float64 {
+	if previous == 0 {
+		if current == 0 {
+			return 0
+		}
+		return 100
 	}
+	return (current - previous) / previous * 100
 }

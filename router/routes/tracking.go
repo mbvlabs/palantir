@@ -1,13 +1,7 @@
 package routes
 
-import (
-	"palantir/internal/routing"
-)
+import "palantir/internal/routing"
 
 const TrackingPrefix = "/t"
 
-var TrackingScript = routing.NewSimpleRoute(
-	"/script.js",
-	"tracking.script",
-	TrackingPrefix,
-)
+var TrackingScript = routing.NewSimpleRoute("/script.js", "tracking.script", TrackingPrefix)

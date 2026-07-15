@@ -2,21 +2,54 @@
 package controllers
 
 import (
-	"palantir/internal/renderer"
-	"palantir/router/cookies"
-
-	"github.com/a-h/templ"
-	"github.com/labstack/echo/v5"
+	"go.uber.org/fx"
+	"palantir/controllers/api"
+	"palantir/router"
 )
 
-func render(etx *echo.Context, t templ.Component) error {
-	return renderer.Render(
-		etx,
-		t,
-		[]renderer.CookieKey{
-			renderer.BackURLKey,
-			cookies.AppKey,
-			cookies.FlashKey,
-		},
-	)
-}
+var otherCache = NewCacheBuilder[string]().WithSize(2).Build
+
+var constructors = fx.Provide(
+	otherCache,
+	NewPages,
+	NewAssets,
+	api.NewAPI,
+	NewSessions,
+	NewResetPasswords,
+	NewWebsites,
+	NewDashboard,
+	NewCollect,
+	NewTracking,
+)
+
+var Module = fx.Module(
+	"controllers",
+	constructors,
+	fx.Invoke(func(r *router.Router, c Pages) error {
+		return c.RegisterRoutes(r)
+	}),
+	fx.Invoke(func(r *router.Router, c Assets) error {
+		return c.RegisterRoutes(r)
+	}),
+	fx.Invoke(func(r *router.Router, c api.API) error {
+		return c.RegisterRoutes(r)
+	}),
+	fx.Invoke(func(r *router.Router, c Sessions) error {
+		return c.RegisterRoutes(r)
+	}),
+	fx.Invoke(func(r *router.Router, c ResetPasswords) error {
+		return c.RegisterRoutes(r)
+	}),
+	fx.Invoke(func(r *router.Router, c Websites) error {
+		return c.RegisterRoutes(r)
+	}),
+	fx.Invoke(func(r *router.Router, c Dashboard) error {
+		return c.RegisterRoutes(r)
+	}),
+	fx.Invoke(func(r *router.Router, c Collect) error {
+		return c.RegisterRoutes(r)
+	}),
+	fx.Invoke(func(r *router.Router, c Tracking) error {
+		return c.RegisterRoutes(r)
+	}),
+)

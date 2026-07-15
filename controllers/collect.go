@@ -4,15 +4,20 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
-	"os"
+	"net/url"
 	"strings"
 	"time"
 
+	"palantir/config"
 	"palantir/internal/storage"
 	"palantir/models"
+	"palantir/router"
+	"palantir/router/routes"
 	"palantir/services"
 
 	"github.com/google/uuid"
@@ -21,12 +26,26 @@ import (
 )
 
 type Collect struct {
-	db  storage.Pool
-	geo services.GeoResolver
+	db   storage.Pool
+	geo  services.GeoResolver
+	salt string
 }
 
-func NewCollect(db storage.Pool, geo services.GeoResolver) Collect {
-	return Collect{db: db, geo: geo}
+func NewCollect(db storage.Pool, geo services.GeoResolver, cfg config.Config) Collect {
+	return Collect{db: db, geo: geo, salt: cfg.App.VisitorHashSalt}
+}
+
+func (c Collect) RegisterRoutes(r *router.Router) error {
+	var errs []error
+	for _, route := range []echo.Route{
+		{Method: http.MethodOptions, Path: routes.CollectCreate.Path(), Name: routes.CollectCreate.Name() + ".options", Handler: c.Preflight},
+		{Method: http.MethodPost, Path: routes.CollectCreate.Path(), Name: routes.CollectCreate.Name(), Handler: c.Create},
+	} {
+		if _, err := r.AddRoute(route); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
 }
 
 type collectPayload struct {
@@ -40,117 +59,91 @@ type collectPayload struct {
 	EventData   json.RawMessage `json:"event_data"`
 }
 
-func setCollectCORSHeaders(etx *echo.Context) {
-	headers := etx.Response().Header()
-	origin := etx.Request().Header.Get("Origin")
-
+func collectCORS(c *echo.Context) {
+	origin := c.Request().Header.Get("Origin")
 	if origin == "" {
-		headers.Set("Access-Control-Allow-Origin", "*")
+		origin = "*"
 	} else {
-		headers.Set("Access-Control-Allow-Origin", origin)
-		headers.Set("Vary", "Origin")
+		c.Response().Header().Add("Vary", "Origin")
 	}
-
-	headers.Set("Access-Control-Allow-Credentials", "true")
-	headers.Set("Access-Control-Allow-Methods", "POST, OPTIONS")
-	headers.Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Accept")
-	headers.Set("Access-Control-Max-Age", "300")
+	c.Response().Header().Set("Access-Control-Allow-Origin", origin)
+	c.Response().Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+	c.Response().Header().Set("Access-Control-Allow-Headers", "Content-Type")
+	c.Response().Header().Set("Access-Control-Max-Age", "300")
 }
 
-func (c Collect) Preflight(etx *echo.Context) error {
-	setCollectCORSHeaders(etx)
-	return etx.NoContent(http.StatusNoContent)
+func (Collect) Preflight(c *echo.Context) error {
+	collectCORS(c)
+	return c.NoContent(http.StatusNoContent)
 }
 
-func (c Collect) Create(etx *echo.Context) error {
-	setCollectCORSHeaders(etx)
-
+func (collector Collect) Create(c *echo.Context) error {
+	collectCORS(c)
+	request := c.Request()
+	request.Body = http.MaxBytesReader(c.Response(), request.Body, 64<<10)
 	var payload collectPayload
-	if err := etx.Bind(&payload); err != nil {
-		return etx.NoContent(http.StatusBadRequest)
+	decoder := json.NewDecoder(request.Body)
+	if err := decoder.Decode(&payload); err != nil {
+		return c.NoContent(http.StatusBadRequest)
 	}
-
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return c.NoContent(http.StatusBadRequest)
+	}
 	websiteID, err := uuid.Parse(payload.WebsiteID)
-	if err != nil {
-		return etx.NoContent(http.StatusBadRequest)
+	if err != nil || !validTrackedURL(payload.URL) || (payload.Type != "pageview" && payload.Type != "event") {
+		return c.NoContent(http.StatusBadRequest)
+	}
+	if payload.Type == "event" && (strings.TrimSpace(payload.EventName) == "" || len(payload.EventName) > 255 || (len(payload.EventData) > 0 && !json.Valid(payload.EventData))) {
+		return c.NoContent(http.StatusBadRequest)
+	}
+	if _, err := models.Website.Find(request.Context(), collector.db.Executor(), websiteID); err != nil {
+		return c.NoContent(http.StatusBadRequest)
 	}
 
-	if payload.URL == "" {
-		return etx.NoContent(http.StatusBadRequest)
-	}
-
-	ctx := etx.Request().Context()
-
-	_, err = models.FindWebsite(ctx, c.db.Conn(), websiteID)
-	if err != nil {
-		return etx.NoContent(http.StatusBadRequest)
-	}
-
-	ua := useragent.New(etx.Request().UserAgent())
-	browserName, _ := ua.Browser()
-	osInfo := ua.OS()
-	device := parseDevice(ua)
-
-	ip := clientIP(etx.Request())
-	visitorHash := computeVisitorHash(websiteID, ip, etx.Request().UserAgent())
-
-	geo, _ := c.geo.Resolve(ip)
-
-	switch payload.Type {
-	case "pageview":
-		_, err = models.CreatePageview(ctx, c.db.Conn(), models.CreatePageviewData{
-			WebsiteID:   websiteID,
-			URL:         payload.URL,
-			Referrer:    payload.Referrer,
-			Browser:     browserName,
-			OS:          osInfo,
-			Device:      device,
-			Language:    payload.Language,
-			ScreenWidth: payload.ScreenWidth,
-			VisitorHash: visitorHash,
-			CountryCode: geo.CountryCode,
-			CountryName: geo.CountryName,
-			City:        geo.City,
-			Region:      geo.Region,
+	ua := useragent.New(request.UserAgent())
+	browser, _ := ua.Browser()
+	ip := clientIP(request)
+	visitorHash := computeVisitorHash(websiteID, ip, request.UserAgent(), collector.salt, time.Now().UTC())
+	geo, _ := collector.geo.Resolve(ip)
+	if payload.Type == "pageview" {
+		_, err = models.Pageview.Create(request.Context(), collector.db.Executor(), models.CreatePageviewData{
+			WebsiteID: websiteID, URL: payload.URL, Referrer: payload.Referrer, Browser: browser,
+			OS: ua.OS(), Device: parseDevice(ua), Language: payload.Language, ScreenWidth: payload.ScreenWidth,
+			VisitorHash: visitorHash, CountryCode: geo.CountryCode, CountryName: geo.CountryName, City: geo.City, Region: geo.Region,
 		})
-		if err != nil {
-			slog.ErrorContext(ctx, "failed to create pageview", "error", err)
-			return etx.NoContent(http.StatusInternalServerError)
-		}
-
-	case "event":
-		if payload.EventName == "" {
-			return etx.NoContent(http.StatusBadRequest)
-		}
-		_, err = models.CreateEvent(ctx, c.db.Conn(), models.CreateEventData{
-			WebsiteID:   websiteID,
-			URL:         payload.URL,
-			EventName:   payload.EventName,
-			EventData:   payload.EventData,
-			VisitorHash: visitorHash,
-			CountryCode: geo.CountryCode,
-			CountryName: geo.CountryName,
-			City:        geo.City,
-			Region:      geo.Region,
+	} else {
+		_, err = models.Event.Create(request.Context(), collector.db.Executor(), models.CreateEventData{
+			WebsiteID: websiteID, URL: payload.URL, EventName: strings.TrimSpace(payload.EventName), EventData: payload.EventData,
+			VisitorHash: visitorHash, CountryCode: geo.CountryCode, CountryName: geo.CountryName, City: geo.City, Region: geo.Region,
 		})
-		if err != nil {
-			slog.ErrorContext(ctx, "failed to create event", "error", err)
-			return etx.NoContent(http.StatusInternalServerError)
-		}
-
-	default:
-		return etx.NoContent(http.StatusBadRequest)
 	}
+	if err != nil {
+		slog.ErrorContext(request.Context(), "failed to collect analytics", "error", err)
+		return c.NoContent(http.StatusInternalServerError)
+	}
+	return c.NoContent(http.StatusNoContent)
+}
 
-	return etx.NoContent(http.StatusOK)
+func validTrackedURL(value string) bool {
+	if value == "" || len(value) > 2048 {
+		return false
+	}
+	parsed, err := url.Parse(value)
+	if err != nil {
+		return false
+	}
+	if parsed.IsAbs() {
+		return (parsed.Scheme == "http" || parsed.Scheme == "https") && parsed.Host != ""
+	}
+	return strings.HasPrefix(value, "/")
 }
 
 func parseDevice(ua *useragent.UserAgent) string {
-	if ua.Mobile() {
-		return "mobile"
-	}
 	if ua.Bot() {
 		return "bot"
+	}
+	if ua.Mobile() {
+		return "mobile"
 	}
 	platform := strings.ToLower(ua.Platform())
 	if strings.Contains(platform, "ipad") || strings.Contains(platform, "tablet") {
@@ -159,18 +152,18 @@ func parseDevice(ua *useragent.UserAgent) string {
 	return "desktop"
 }
 
-func clientIP(r *http.Request) string {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		parts := strings.SplitN(xff, ",", 2)
-		return strings.TrimSpace(parts[0])
+func clientIP(request *http.Request) string {
+	if forwarded := request.Header.Get("X-Forwarded-For"); forwarded != "" {
+		return strings.TrimSpace(strings.SplitN(forwarded, ",", 2)[0])
 	}
-	host, _, _ := net.SplitHostPort(r.RemoteAddr)
-	return host
+	host, _, err := net.SplitHostPort(request.RemoteAddr)
+	if err == nil {
+		return host
+	}
+	return request.RemoteAddr
 }
 
-func computeVisitorHash(websiteID uuid.UUID, ip string, userAgent string) string {
-	salt := os.Getenv("VISITOR_HASH_SALT")
-	day := time.Now().UTC().Format("2006-01-02")
-	h := sha256.Sum256([]byte(websiteID.String() + ip + userAgent + day + salt))
-	return hex.EncodeToString(h[:])
+func computeVisitorHash(websiteID uuid.UUID, ip, userAgent, salt string, day time.Time) string {
+	hash := sha256.Sum256([]byte(websiteID.String() + ip + userAgent + day.UTC().Format("2006-01-02") + salt))
+	return hex.EncodeToString(hash[:])
 }
