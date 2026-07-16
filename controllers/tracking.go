@@ -25,7 +25,8 @@ function send(type,extra){var data={website_id:id,type:type,url:location.pathnam
 if(extra)Object.assign(data,extra);var body=JSON.stringify(data);
 if(navigator.sendBeacon&&navigator.sendBeacon(ep,new Blob([body],{type:'application/json'})))return;
 fetch(ep,{method:'POST',headers:{'Content-Type':'application/json'},body:body,keepalive:true}).catch(function(){});}
-send('pageview');window.palantir={track:function(name,data){send('event',{event_name:name,event_data:data})}};
+send('pageview');window.palantir={track:function(name,data){if(name)send('event',{event_name:name,event_data:data})}};
+d.addEventListener('click',function(event){var target=event.target instanceof Element&&event.target.closest('[data-palantir-event]');if(target)window.palantir.track(target.dataset.palantirEvent);});
 })();`
 
 func (Tracking) Script(c *echo.Context) error {

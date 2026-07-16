@@ -17,7 +17,7 @@
   type Stats = {
     TotalPageviews: number; TotalUniqueVisitors: number; ViewsPerVisitor: number; BounceRate: number
     PageviewsChange: number; UniqueVisitorsChange: number; ViewsPerVisitorChange: number; BounceRateChange: number
-    PageviewsOverTime: Bucket[]; VisitorsOverTime: Bucket[]
+    PageviewsOverTime: Bucket[]; VisitorsOverTime: Bucket[]; EventsOverTime: Bucket[]
     TopPages: Item[]; TopReferrers: Item[]; Browsers: Item[]; OSes: Item[]; Devices: Item[]; TopCountries: Item[]; TopCities: Item[]; TopEvents: Item[]
   }
   let { websites, website, stats, period, start = '', end = '', bucket }: { websites: Website[]; website: Website; stats: Stats; period: string; start?: string; end?: string; bucket: string } = $props()
@@ -26,11 +26,17 @@
   let refreshing = $state(false)
   let refreshFailed = $state(false)
   const chartConfig = { pageviews: { label: 'Pageviews', color: 'var(--chart-1)' }, visitors: { label: 'Visitors', color: 'var(--chart-2)' } } satisfies Chart.ChartConfig
+  const eventChartConfig = { events: { label: 'Events', color: 'var(--chart-3)' } } satisfies Chart.ChartConfig
   const chartData = $derived(stats.PageviewsOverTime.map((point, index) => ({
     label: new Date(point.time).toLocaleDateString(undefined, bucket === 'hour' ? { day: 'numeric', hour: 'numeric' } : { month: 'short', day: 'numeric' }),
     pageviews: point.count,
     visitors: stats.VisitorsOverTime[index]?.count ?? 0,
   })))
+  const eventChartData = $derived(stats.EventsOverTime.map((point) => ({
+    label: new Date(point.time).toLocaleDateString(undefined, bucket === 'hour' ? { day: 'numeric', hour: 'numeric' } : { month: 'short', day: 'numeric' }),
+    events: point.count,
+  })))
+  const eventTotal = $derived(stats.EventsOverTime.reduce((total, point) => total + point.count, 0))
   const dashboard = $derived(routes.websiteDashboard(website.ID))
   const periodURL = (value: string) => `${dashboard}?period=${value}`
   const metrics = $derived([
@@ -100,10 +106,43 @@
       </Card.Content>
     </Card.Root>
 
+    <section class="grid gap-5 xl:grid-cols-[minmax(0,2fr)_minmax(18rem,1fr)]" aria-label="Events">
+      <Card.Root>
+        <Card.Header class="border-b sm:flex-row sm:items-start sm:justify-between">
+          <div><Card.Title class="font-heading text-xl">Event activity</Card.Title><Card.Description>Tracked interactions across the selected period.</Card.Description></div>
+          <div class="mt-3 sm:mt-0 sm:text-right"><p class="font-heading text-2xl font-semibold tabular-nums">{eventTotal.toLocaleString()}</p><p class="text-xs text-muted-foreground">total events</p></div>
+        </Card.Header>
+        <Card.Content class="pt-6">
+          {#if eventTotal === 0}
+            <div class="grid min-h-72 place-items-center"><div class="text-center"><p class="font-heading text-lg font-medium">No events yet</p><p class="mt-1 text-sm text-muted-foreground">Add data-palantir-event to an element to track interactions.</p></div></div>
+          {:else}
+            <Chart.Container config={eventChartConfig} class="min-h-72 w-full"><LineChart data={eventChartData} x="label" series={[{ key: 'events', label: 'Events', color: 'var(--color-events)' }]} axis /></Chart.Container>
+          {/if}
+        </Card.Content>
+      </Card.Root>
+
+      <Card.Root>
+        <Card.Header class="border-b pb-4"><Card.Title class="font-heading text-lg">Top events</Card.Title><Card.Description>Occurrences and share of all events.</Card.Description></Card.Header>
+        <Card.Content class="pt-5">
+          {#if stats.TopEvents.length === 0}
+            <p class="py-8 text-center text-sm text-muted-foreground">No data for this period.</p>
+          {:else}
+            <ol class="space-y-4">
+              {#each stats.TopEvents as item}
+                <li>
+                  <div class="mb-1.5 flex items-center justify-between gap-4 text-sm"><span class="truncate font-medium">{item.name || 'Unknown'}</span><span class="shrink-0 tabular-nums text-muted-foreground">{item.views.toLocaleString()} · {((item.views / eventTotal) * 100).toFixed(0)}%</span></div>
+                  <div class="h-1 overflow-hidden bg-muted"><div class="h-full bg-foreground/55" style={`width: ${Math.max((item.views / eventTotal) * 100, 3)}%`}></div></div>
+                </li>
+              {/each}
+            </ol>
+          {/if}
+        </Card.Content>
+      </Card.Root>
+    </section>
+
     <section class="grid gap-5 md:grid-cols-2 xl:grid-cols-3">
       <BreakdownCard title="Top pages" items={stats.TopPages} />
       <BreakdownCard title="Referrers" items={stats.TopReferrers} />
-      <BreakdownCard title="Events" items={stats.TopEvents} />
       <BreakdownCard title="Countries" items={stats.TopCountries} />
       <BreakdownCard title="Cities" items={stats.TopCities} />
       <BreakdownCard title="Browsers" items={stats.Browsers} />
