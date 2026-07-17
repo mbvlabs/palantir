@@ -108,7 +108,7 @@
 
     <section class="grid gap-5 xl:grid-cols-[minmax(0,2fr)_minmax(18rem,1fr)]" aria-label="Events">
       <Card.Root>
-        <Card.Header class="border-b sm:flex-row sm:items-start sm:justify-between">
+        <Card.Header class="border-b sm:flex sm:flex-row sm:items-start sm:justify-between">
           <div><Card.Title class="font-heading text-xl">Event activity</Card.Title><Card.Description>Tracked interactions across the selected period.</Card.Description></div>
           <div class="mt-3 sm:mt-0 sm:text-right"><p class="font-heading text-2xl font-semibold tabular-nums">{eventTotal.toLocaleString()}</p><p class="text-xs text-muted-foreground">total events</p></div>
         </Card.Header>

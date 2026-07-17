@@ -19,6 +19,7 @@ func (t Tracking) RegisterRoutes(r *router.Router) error {
 }
 
 const trackingScript = `(function(){
+if(window.palantir)return;
 var d=document,s=d.currentScript,id=s&&s.dataset.websiteId;if(!id)return;
 var ep=new URL('/api/collect',s.src).href;
 function send(type,extra){var data={website_id:id,type:type,url:location.pathname+location.search,referrer:d.referrer,screen_width:innerWidth,language:navigator.language};
