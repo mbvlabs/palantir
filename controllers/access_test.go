@@ -46,7 +46,9 @@ func TestHTTPAccessMatrix(t *testing.T) {
 
 	tests := []struct {
 		name, method, path string
+		origin             string
 		want               int
+		wantOrigin         string
 	}{
 		{name: "sign in get public", method: http.MethodGet, path: "/users/sign-in", want: http.StatusOK},
 		{name: "sign in head public", method: http.MethodHead, path: "/users/sign-in", want: http.StatusOK},
@@ -60,7 +62,7 @@ func TestHTTPAccessMatrix(t *testing.T) {
 		{name: "sign out private", method: http.MethodDelete, path: "/users/sign-out", want: http.StatusSeeOther},
 		{name: "registration removed", method: http.MethodGet, path: "/users/sign-up", want: http.StatusNotFound},
 		{name: "confirmation removed", method: http.MethodGet, path: "/users/confirmation/new", want: http.StatusNotFound},
-		{name: "collection public", method: http.MethodOptions, path: "/api/collect", want: http.StatusNoContent},
+		{name: "collection public", method: http.MethodOptions, path: "/api/collect", origin: "https://mbvlabs.com", want: http.StatusNoContent, wantOrigin: "https://mbvlabs.com"},
 		{name: "tracking public", method: http.MethodGet, path: "/t/script.js", want: http.StatusOK},
 		{name: "health public", method: http.MethodGet, path: "/api/health", want: http.StatusOK},
 		{name: "asset public", method: http.MethodGet, path: "/robots.txt", want: http.StatusOK},
@@ -69,10 +71,17 @@ func TestHTTPAccessMatrix(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			req := httptest.NewRequest(test.method, test.path, nil)
+			if test.origin != "" {
+				req.Header.Set("Origin", test.origin)
+				req.Header.Set("Access-Control-Request-Method", http.MethodPost)
+			}
 			rec := httptest.NewRecorder()
 			r.Handler.ServeHTTP(rec, req)
 			if rec.Code != test.want {
 				t.Fatalf("status = %d, want %d; location=%q body=%s", rec.Code, test.want, rec.Header().Get("Location"), rec.Body.String())
+			}
+			if got := rec.Header().Get("Access-Control-Allow-Origin"); got != test.wantOrigin {
+				t.Fatalf("Access-Control-Allow-Origin = %q, want %q", got, test.wantOrigin)
 			}
 		})
 	}

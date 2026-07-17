@@ -15,6 +15,7 @@ import (
 	"palantir/internal/server"
 	"palantir/router/cookies"
 	"palantir/router/middleware"
+	"palantir/router/routes"
 	"palantir/telemetry"
 
 	"github.com/google/uuid"
@@ -173,6 +174,9 @@ func newCORSConfig(applicationOrigin string, additionalOrigins []string) (echomw
 	}
 
 	return echomw.CORSConfig{
+		Skipper: func(c *echo.Context) bool {
+			return c.Request().URL.Path == routes.CollectCreate.Path()
+		},
 		AllowOrigins:     origins,
 		AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"},
 		AllowHeaders:     []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token"},
