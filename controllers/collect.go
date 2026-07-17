@@ -67,6 +67,7 @@ func collectCORS(c *echo.Context) {
 		c.Response().Header().Add("Vary", "Origin")
 	}
 	c.Response().Header().Set("Access-Control-Allow-Origin", origin)
+	c.Response().Header().Set("Access-Control-Allow-Credentials", "true")
 	c.Response().Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
 	c.Response().Header().Set("Access-Control-Allow-Headers", "Content-Type")
 	c.Response().Header().Set("Access-Control-Max-Age", "300")

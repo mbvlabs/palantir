@@ -83,6 +83,9 @@ func TestHTTPAccessMatrix(t *testing.T) {
 			if got := rec.Header().Get("Access-Control-Allow-Origin"); got != test.wantOrigin {
 				t.Fatalf("Access-Control-Allow-Origin = %q, want %q", got, test.wantOrigin)
 			}
+			if test.origin != "" && rec.Header().Get("Access-Control-Allow-Credentials") != "true" {
+				t.Fatal("expected credentialed collection CORS")
+			}
 		})
 	}
 }
