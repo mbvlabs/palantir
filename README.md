@@ -20,6 +20,12 @@ A small tracking script records pageviews and explicit events. The authenticated
 - Live dashboard refresh
 - Cross-origin collection with configurable CORS controls
 
+**Simple statistic**
+<img width="1303" height="575" alt="image" src="https://github.com/user-attachments/assets/1075c239-935c-4d45-90ce-9dc3298ebf06" />
+
+**Basic drilldown**
+<img width="1299" height="810" alt="image" src="https://github.com/user-attachments/assets/dd3dc1bb-8c5b-46b7-970e-0e7010dd565c" />
+
 ## Tracking setup
 
 Create a website in Palantir and open its **Tracking setup** page. Palantir provides the correct script URL and website ID.
