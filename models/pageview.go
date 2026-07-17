@@ -62,6 +62,11 @@ type TimeBucket struct {
 	Count int64     `json:"count"`
 }
 
+type RateBucket struct {
+	Time time.Time `json:"time" bun:"bucket_time"`
+	Rate float64   `json:"rate" bun:"rate"`
+}
+
 type BreakdownItem struct {
 	Name  string `json:"name" bun:"name"`
 	Views int64  `json:"views" bun:"views"`
@@ -78,6 +83,7 @@ type DashboardStats struct {
 	ViewsPerVisitor, BounceRate                                                    float64
 	PageviewsChange, UniqueVisitorsChange, ViewsPerVisitorChange, BounceRateChange float64
 	PageviewsOverTime, VisitorsOverTime, EventsOverTime                            []TimeBucket
+	BounceRateOverTime                                                             []RateBucket
 	TopPages, TopReferrers, Browsers, OSes, Devices, TopEvents                     []BreakdownItem
 	TopCountries, TopCities                                                        []GeoBreakdownItem
 }
@@ -99,6 +105,10 @@ func DashboardStatsFor(ctx context.Context, db storage.Executor, websiteID uuid.
 		return DashboardStats{}, err
 	}
 	visitors, err := pageviewTimeBuckets(ctx, db, websiteID, start, end, bucket, true)
+	if err != nil {
+		return DashboardStats{}, err
+	}
+	bounceRates, err := bounceRateTimeBuckets(ctx, db, websiteID, start, end, bucket)
 	if err != nil {
 		return DashboardStats{}, err
 	}
@@ -151,7 +161,8 @@ func DashboardStatsFor(ctx context.Context, db storage.Executor, websiteID uuid.
 		ViewsPerVisitorChange: percentChange(previousViewsPerVisitor, viewsPerVisitor),
 		BounceRateChange:      -percentChange(previousBounceRate, bounceRate),
 		PageviewsOverTime:     pageviews, VisitorsOverTime: visitors, EventsOverTime: events,
-		TopPages: topPages, TopReferrers: topReferrers, Browsers: browsers, OSes: oses,
+		BounceRateOverTime: bounceRates,
+		TopPages:           topPages, TopReferrers: topReferrers, Browsers: browsers, OSes: oses,
 		Devices: devices, TopCountries: countries, TopCities: cities, TopEvents: topEvents,
 	}, nil
 }
@@ -199,6 +210,39 @@ func pageviewTimeBuckets(ctx context.Context, db storage.Executor, websiteID uui
 		items[i] = TimeBucket{Time: row.Time, Count: row.Count}
 	}
 	return fillTimeBuckets(items, start, end, bucket), nil
+}
+
+func bounceRateTimeBuckets(ctx context.Context, db storage.Executor, websiteID uuid.UUID, start, end time.Time, bucket string) ([]RateBucket, error) {
+	visitors := db.NewSelect().TableExpr("pageviews AS pageview").
+		ColumnExpr("date_trunc(?, pageview.created_at) AS bucket_time", bucket).
+		ColumnExpr("pageview.visitor_hash").
+		ColumnExpr("count(*) AS views").
+		Where("pageview.website_id = ?", websiteID).
+		Where("pageview.created_at BETWEEN ? AND ?", start, end).
+		Where("pageview.visitor_hash IS NOT NULL").
+		GroupExpr("bucket_time, pageview.visitor_hash")
+
+	var sparse []RateBucket
+	err := db.NewSelect().TableExpr("(?) AS bucket_visitors", visitors).
+		ColumnExpr("bucket_time").
+		ColumnExpr("count(*) FILTER (WHERE views = 1) * 100.0 / count(*) AS rate").
+		GroupExpr("bucket_time").
+		OrderExpr("bucket_time").
+		Scan(ctx, &sparse)
+	if err != nil {
+		return nil, err
+	}
+
+	existing := make(map[int64]float64, len(sparse))
+	for _, item := range sparse {
+		existing[item.Time.Unix()] = item.Rate
+	}
+	buckets := fillTimeBuckets(nil, start, end, bucket)
+	items := make([]RateBucket, len(buckets))
+	for i, item := range buckets {
+		items[i] = RateBucket{Time: item.Time, Rate: existing[item.Time.Unix()]}
+	}
+	return items, nil
 }
 
 func pageviewBreakdown(ctx context.Context, db storage.Executor, websiteID uuid.UUID, start, end time.Time, column string, nonEmpty bool, limit int) ([]BreakdownItem, error) {

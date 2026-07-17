@@ -52,7 +52,7 @@ func (w Websites) New(c *echo.Context) error {
 	if err != nil {
 		return internalError(c, err)
 	}
-	return inertia.Page(c, "Websites/New", inertia.Props{"websites": websites})
+	return inertia.Page(c, "Websites/New", authenticatedProps(c, inertia.Props{"websites": websites}))
 }
 
 func (w Websites) Create(c *echo.Context) error {
@@ -68,7 +68,7 @@ func (w Websites) Create(c *echo.Context) error {
 			if listErr != nil {
 				return internalError(c, listErr)
 			}
-			return inertia.Page(c, "Websites/New", inertia.Props{"websites": websites}, inertia.WithValidationErrors(validationErrors.ToMap()))
+			return inertia.Page(c, "Websites/New", authenticatedProps(c, inertia.Props{"websites": websites}), inertia.WithValidationErrors(validationErrors.ToMap()))
 		}
 		return internalError(c, err)
 	}
@@ -87,7 +87,7 @@ func (w Websites) Show(c *echo.Context) error {
 	if err != nil {
 		return internalError(c, err)
 	}
-	return inertia.Page(c, "Websites/Show", inertia.Props{"website": website, "websites": websites, "trackingScriptURL": config.BaseURL + routes.TrackingScript.URL()})
+	return inertia.Page(c, "Websites/Show", authenticatedProps(c, inertia.Props{"website": website, "websites": websites, "trackingScriptURL": config.BaseURL + routes.TrackingScript.URL()}))
 }
 
 func (w Websites) Edit(c *echo.Context) error {
@@ -99,7 +99,7 @@ func (w Websites) Edit(c *echo.Context) error {
 	if err != nil {
 		return internalError(c, err)
 	}
-	return inertia.Page(c, "Websites/Edit", inertia.Props{"website": website, "websites": websites})
+	return inertia.Page(c, "Websites/Edit", authenticatedProps(c, inertia.Props{"website": website, "websites": websites}))
 }
 
 func (w Websites) Update(c *echo.Context) error {
@@ -123,7 +123,7 @@ func (w Websites) Update(c *echo.Context) error {
 			if findErr != nil {
 				return websiteError(c, findErr)
 			}
-			return inertia.Page(c, "Websites/Edit", inertia.Props{"website": current, "websites": websites}, inertia.WithValidationErrors(validationErrors.ToMap()))
+			return inertia.Page(c, "Websites/Edit", authenticatedProps(c, inertia.Props{"website": current, "websites": websites}), inertia.WithValidationErrors(validationErrors.ToMap()))
 		}
 		return websiteError(c, err)
 	}

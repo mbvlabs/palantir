@@ -2,10 +2,19 @@
 package controllers
 
 import (
-	"go.uber.org/fx"
 	"palantir/controllers/api"
+	"palantir/internal/inertia"
 	"palantir/router"
+	"palantir/router/cookies"
+
+	"github.com/labstack/echo/v5"
+	"go.uber.org/fx"
 )
+
+func authenticatedProps(c *echo.Context, props inertia.Props) inertia.Props {
+	props["auth"] = map[string]string{"email": cookies.ExtractFromCookieApp(c).Email}
+	return props
+}
 
 var otherCache = NewCacheBuilder[string]().WithSize(2).Build
 

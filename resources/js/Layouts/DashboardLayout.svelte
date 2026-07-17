@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { router } from '@inertiajs/svelte'
+  import { page, router } from '@inertiajs/svelte'
   import { ChartNoAxesCombined, CodeXml, LogOut, Plus, Settings2 } from '@lucide/svelte'
   import type { Snippet } from 'svelte'
   import { Button } from '@/components/ui/button'
@@ -8,7 +8,9 @@
   import { routes } from '@/routes'
 
   type Website = { ID: string; Name: string; Domain: string }
+  type SharedProps = { auth?: { email?: string } }
   let { websites, website, section = 'websites', children }: { websites: Website[]; website?: Website; section?: 'websites' | 'dashboard' | 'tracking' | 'settings'; children: Snippet } = $props()
+  const accountEmail = $derived(($page.props as SharedProps).auth?.email || 'Account')
 
   function chooseWebsite(event: Event) {
     const id = (event.currentTarget as HTMLSelectElement).value
@@ -46,7 +48,6 @@
       {#if website}
         <Sidebar.Separator />
         <Sidebar.Group>
-          <Sidebar.GroupLabel>{website.Name}</Sidebar.GroupLabel>
           <Sidebar.GroupContent>
             <Sidebar.Menu>
               <Sidebar.MenuItem><Sidebar.MenuButton isActive={section === 'dashboard'} tooltipContent="Dashboard">{#snippet child({ props })}<a {...props} href={routes.websiteDashboard(website.ID)}><ChartNoAxesCombined /><span>Dashboard</span></a>{/snippet}</Sidebar.MenuButton></Sidebar.MenuItem>
@@ -59,9 +60,15 @@
     </Sidebar.Content>
 
     <Sidebar.Footer class="p-3">
-      <div class="border border-sidebar-border bg-sidebar-accent/40 p-3 group-data-[collapsible=icon]:hidden">
-        <p class="text-xs font-medium">Collecting quietly</p>
-        <p class="mt-1 text-xs leading-relaxed text-muted-foreground">No cookies. No invasive profiles.</p>
+      <div class="group-data-[collapsible=icon]:hidden">
+        <label class="text-xs font-semibold uppercase tracking-wider text-muted-foreground" for="website-switcher">Website</label>
+        <div class="relative mt-2">
+          <select id="website-switcher" class="h-9 w-full appearance-none border border-sidebar-border bg-sidebar-accent py-1 pl-3 pr-9 text-sm font-medium outline-none transition-colors hover:bg-muted focus-visible:ring-2 focus-visible:ring-sidebar-ring" value={website?.ID ?? ''} onchange={chooseWebsite} disabled={!websites.length}>
+            <option value="" disabled>{websites.length ? 'Select a website' : 'No websites yet'}</option>
+            {#each websites as site}<option value={site.ID}>{site.Name}</option>{/each}
+          </select>
+          <span class="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-xs text-muted-foreground">⌄</span>
+        </div>
       </div>
     </Sidebar.Footer>
     <Sidebar.Rail />
@@ -71,19 +78,10 @@
     <header class="sticky top-0 z-20 flex h-16 items-center gap-3 border-b bg-background/90 px-4 backdrop-blur md:px-6">
       <Sidebar.Trigger />
       <div class="h-5 w-px bg-border"></div>
-      <label class="sr-only" for="website-switcher">Select website</label>
-      <div class="relative min-w-0">
-        <select id="website-switcher" class="h-9 max-w-[15rem] appearance-none border border-input bg-background py-1 pl-3 pr-9 text-sm font-medium shadow-xs outline-none transition-colors hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring sm:min-w-52" value={website?.ID ?? ''} onchange={chooseWebsite}>
-          <option value="" disabled>{websites.length ? 'Select a website' : 'No websites yet'}</option>
-          {#each websites as site}<option value={site.ID}>{site.Name}</option>{/each}
-        </select>
-        <span class="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-xs text-muted-foreground">⌄</span>
-      </div>
-      {#if website}<span class="hidden truncate text-sm text-muted-foreground lg:block">{website.Domain}</span>{/if}
       <div class="ml-auto">
         <DropdownMenu.Root>
-          <DropdownMenu.Trigger>{#snippet child({ props })}<Button {...props} variant="ghost" size="sm">Account</Button>{/snippet}</DropdownMenu.Trigger>
-          <DropdownMenu.Content align="end" class="w-44"><DropdownMenu.Label>Account</DropdownMenu.Label><DropdownMenu.Separator /><DropdownMenu.Item onclick={() => router.delete(routes.sessionDestroy())}><LogOut /> Sign out</DropdownMenu.Item></DropdownMenu.Content>
+          <DropdownMenu.Trigger>{#snippet child({ props })}<Button {...props} variant="ghost" size="sm" class="max-w-64 normal-case tracking-normal"><span class="truncate">{accountEmail}</span></Button>{/snippet}</DropdownMenu.Trigger>
+          <DropdownMenu.Content align="end" class="w-56"><DropdownMenu.Label class="truncate normal-case tracking-normal">{accountEmail}</DropdownMenu.Label><DropdownMenu.Separator /><DropdownMenu.Item onclick={() => router.delete(routes.sessionDestroy())}><LogOut /> Sign out</DropdownMenu.Item></DropdownMenu.Content>
         </DropdownMenu.Root>
       </div>
     </header>

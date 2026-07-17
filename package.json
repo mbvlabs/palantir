@@ -10,7 +10,11 @@
     "@inertiajs/svelte": "^2.0.0",
     "bits-ui": "^2.18.1",
     "class-variance-authority": "^0.7.1",
-    "svelte": "^5.0.0"
+    "d3-geo": "3.1.1",
+    "iso-3166-1": "2.1.1",
+    "svelte": "^5.0.0",
+    "topojson-client": "3.1.0",
+    "world-atlas": "2.0.2"
   },
   "devDependencies": {
     "@fontsource-variable/noto-sans": "^5.2.10",
@@ -19,6 +23,8 @@
     "@lucide/svelte": "^1.24.0",
     "@sveltejs/vite-plugin-svelte": "^5.0.0",
     "@tailwindcss/vite": "^4.0.0",
+    "@types/d3-geo": "3.1.0",
+    "@types/topojson-client": "3.1.5",
     "clsx": "^2.1.1",
     "layerchart": "2.0.0-next.48",
     "shadcn-svelte": "^1.4.2",

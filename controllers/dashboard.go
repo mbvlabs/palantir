@@ -57,10 +57,10 @@ func (d Dashboard) Show(c *echo.Context) error {
 	if err != nil {
 		return internalError(c, err)
 	}
-	return inertia.Page(c, "Dashboard/Show", inertia.Props{
+	return inertia.Page(c, "Dashboard/Show", authenticatedProps(c, inertia.Props{
 		"website": website, "websites": websites, "stats": stats, "period": period,
 		"start": startParam, "end": endParam, "bucket": bucket,
-	})
+	}))
 }
 
 func parseDateRange(period, startParam, endParam string) (time.Time, time.Time) {

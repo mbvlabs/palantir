@@ -1,9 +1,53 @@
 package controllers
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
+
+	"palantir/database"
+	"palantir/models"
+	"palantir/models/factories"
 )
+
+func TestDashboardIncludesBounceRateSeries(t *testing.T) {
+	setTestConfig(t)
+	db := controllerTestCluster.NewTestDB(t, database.Migrations, "migrations")
+	ctx := context.Background()
+	owner, err := factories.CreateUser(ctx, db.Executor())
+	if err != nil {
+		t.Fatal(err)
+	}
+	website, err := models.Website.Create(ctx, db.Executor(), models.CreateWebsiteData{UserID: owner.ID, Name: "Analytics", Domain: "analytics.example"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, visitor := range []string{"returning", "returning", "bounce"} {
+		if _, err := models.Pageview.Create(ctx, db.Executor(), models.CreatePageviewData{WebsiteID: website.ID, URL: "/", VisitorHash: visitor}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	e := authenticatedEcho(owner)
+	e.GET("/websites/:id/dashboard", NewDashboard(db).Show)
+	req := httptest.NewRequest(http.MethodGet, "/websites/"+website.ID.String()+"/dashboard?period=today", nil)
+	req.Header.Set("X-Inertia", "true")
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("dashboard status = %d; body=%s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `"BounceRateOverTime"`) || !strings.Contains(body, `"rate":50`) {
+		t.Fatalf("dashboard props missing 50%% bounce-rate point: %s", body)
+	}
+	if !strings.Contains(body, `"auth":{"email":"`+owner.Email+`"}`) || strings.Contains(body, `"Password"`) {
+		t.Fatalf("dashboard props did not expose only the authenticated email: %s", body)
+	}
+}
 
 func TestParseDateRange(t *testing.T) {
 	now := time.Date(2026, time.July, 18, 14, 30, 0, 0, time.UTC)
