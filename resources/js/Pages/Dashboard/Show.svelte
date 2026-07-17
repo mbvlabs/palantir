@@ -1,7 +1,7 @@
 <script lang="ts">
   import { router } from '@inertiajs/svelte'
   import { onMount } from 'svelte'
-  import { Area, AreaChart, LineChart, LinearGradient } from 'layerchart'
+  import { Area, AreaChart, LineChart, LinearGradient, Spline } from 'layerchart'
   import BreakdownCard from '@/Components/BreakdownCard.svelte'
   import DashboardLayout from '@/Layouts/DashboardLayout.svelte'
   import { Button } from '@/components/ui/button'
@@ -31,12 +31,12 @@
   const chartConfig = { value: { label: 'Value', color: 'var(--chart-2)' } } satisfies Chart.ChartConfig
   const eventChartConfig = { events: { label: 'Events', color: 'var(--chart-3)' } } satisfies Chart.ChartConfig
   const xTickStride = $derived(Math.max(1, Math.ceil(stats.PageviewsOverTime.length / 8)))
-  const countChartProps = $derived({ xAxis: { ticks: xTickStride }, yAxis: { format: 'integer' as const, ticks: 5 } })
-  const trafficChartProps = $derived({ xAxis: { ticks: xTickStride }, yAxis: { format: activeMetric === 'viewsPerVisitor' ? 'decimal' as const : 'integer' as const, ticks: 5 } })
+  const chartLabel = (time: Date) => bucket === 'hour'
+    ? time.toLocaleTimeString(undefined, { hour: 'numeric' })
+    : time.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+  const countChartProps = $derived({ xAxis: { ticks: xTickStride, format: chartLabel }, yAxis: { format: 'integer' as const, ticks: 5 } })
+  const trafficChartProps = $derived({ xAxis: { ticks: xTickStride, format: chartLabel }, yAxis: { format: activeMetric === 'viewsPerVisitor' ? 'decimal' as const : 'integer' as const, ticks: 5 } })
   const chartPadding = { top: 12, right: 16, bottom: 24, left: 8 }
-  const chartLabel = (time: string) => bucket === 'hour'
-    ? new Date(time).toLocaleTimeString(undefined, { hour: 'numeric' })
-    : new Date(time).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
   const metrics = $derived([
     { key: 'visitors' as const, label: 'Unique visitors', value: stats.TotalUniqueVisitors.toLocaleString(), change: stats.UniqueVisitorsChange },
     { key: 'pageviews' as const, label: 'Pageviews', value: stats.TotalPageviews.toLocaleString(), change: stats.PageviewsChange },
@@ -47,7 +47,7 @@
   const chartData = $derived(stats.PageviewsOverTime.map((point, index) => {
     const visitors = stats.VisitorsOverTime[index]?.count ?? 0
     return {
-      label: chartLabel(point.time),
+      time: new Date(point.time),
       value: activeMetric === 'visitors' ? visitors
         : activeMetric === 'viewsPerVisitor' ? (visitors ? point.count / visitors : 0)
         : activeMetric === 'bounceRate' ? (stats.BounceRateOverTime[index]?.rate ?? 0)
@@ -55,7 +55,7 @@
     }
   }))
   const eventChartData = $derived(stats.EventsOverTime.map((point) => ({
-    label: chartLabel(point.time),
+    time: new Date(point.time),
     events: point.count,
   })))
   const eventTotal = $derived(stats.EventsOverTime.reduce((total, point) => total + point.count, 0))
@@ -118,14 +118,17 @@
           <div class="grid h-80 place-items-center"><div class="text-center"><p class="font-heading text-lg font-medium">No activity yet</p><p class="mt-1 text-sm text-muted-foreground">Try another period or check the tracking setup.</p></div></div>
         {:else}
           <Chart.Container config={chartConfig} class="h-80 w-full">
-            <AreaChart data={chartData} x="label" series={[{ key: 'value', label: activeMetricLabel, color: 'var(--color-value)' }]} axis props={trafficChartProps} padding={chartPadding}>
+            <AreaChart data={chartData} x="time" series={[{ key: 'value', label: activeMetricLabel, color: 'var(--color-value)' }]} axis props={trafficChartProps} padding={chartPadding}>
               {#snippet marks()}
                 <LinearGradient id="traffic-area-gradient" vertical stops={[
                   ['0%', 'color-mix(in srgb, var(--color-value) 30%, transparent)'],
                   ['55%', 'color-mix(in srgb, var(--color-value) 10%, transparent)'],
                   ['100%', 'transparent'],
                 ]}>
-                  {#snippet children({ gradient })}<Area seriesKey="value" fill={gradient} line />{/snippet}
+                  {#snippet children({ gradient })}
+                    <Area seriesKey="value" fill={gradient} stroke="none" />
+                    <Spline seriesKey="value" fill="none" />
+                  {/snippet}
                 </LinearGradient>
               {/snippet}
             </AreaChart>
@@ -144,7 +147,7 @@
           {#if eventTotal === 0}
             <div class="grid h-64 place-items-center"><div class="text-center"><p class="font-heading text-base font-medium">No events yet</p><p class="mt-1 text-sm text-muted-foreground">Add data-palantir-event to an element to track interactions.</p></div></div>
           {:else}
-            <Chart.Container config={eventChartConfig} class="h-64 w-full"><LineChart data={eventChartData} x="label" series={[{ key: 'events', label: 'Events', color: 'var(--color-events)' }]} axis props={countChartProps} padding={chartPadding} /></Chart.Container>
+            <Chart.Container config={eventChartConfig} class="h-64 w-full"><LineChart data={eventChartData} x="time" series={[{ key: 'events', label: 'Events', color: 'var(--color-events)' }]} axis props={countChartProps} padding={chartPadding} /></Chart.Container>
           {/if}
         </Card.Content>
       </Card.Root>
